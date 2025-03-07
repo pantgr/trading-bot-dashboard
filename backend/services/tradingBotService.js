@@ -230,17 +230,22 @@ processSignals(symbol, signals, userId) {
 }
 
 // Προσθέστε μια νέα μέθοδο για την εκτέλεση της συναλλαγής
+// Αλλαγή στη μέθοδο executeTrade
 executeTrade(signal, userId) {
   if (!signal) return;
   
   console.log(`Executing consensus trade: ${signal.action} ${signal.symbol} based on consensus`);
   
-  // Εδώ θα προωθούσατε το σήμα στη μέθοδο processSignal του bot
-  // Απλοποιημένη προσέγγιση για λόγους συμβατότητας
+  // Αφαίρεσε το παρακάτω emit που προκαλεί το διπλό σήμα
+  /*
   this.emit('trade_signal', {
     ...signal,
     userId
   });
+  */
+  
+  // Εδώ μπορείς να προσθέσεις άλλη λογική εκτέλεσης συναλλαγών αν χρειαστεί
+  // χωρίς να εκπέμπεις δεύτερο σήμα
 }
   
   // Λήψη των ενεργών συμβόλων που παρακολουθούνται
