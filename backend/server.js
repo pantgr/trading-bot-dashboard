@@ -951,6 +951,22 @@ tradingBot.on('indicators_update', (data) => {
   io.to(`bot:${data.userId}`).emit('indicators_update', data);
 });
 
+// Προσθήκη στο server.js - τοποθετήστε αυτό μετά τα υπάρχοντα routes
+
+// Εισαγωγή του router ρυθμίσεων
+const botSettingsRouter = require('./routes/botSettings');
+
+// Προσθήκη των routes για τις ρυθμίσεις του bot
+app.use('/api/bot', botSettingsRouter);
+
+// Συνδέστε τα γεγονότα ενημέρωσης ρυθμίσεων
+tradingBot.on('settings_updated', (settings) => {
+  console.log('Broadcasting bot settings update to all clients');
+  io.emit('bot_settings_updated', settings);
+});
+
+// Το υπόλοιπο του server.js παραμένει αμετάβλητο...
+
 // Εκκίνηση server
 const PORT = process.env.PORT || 5000;
 server.listen(PORT, () => {

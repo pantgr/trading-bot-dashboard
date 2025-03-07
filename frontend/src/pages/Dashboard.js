@@ -1,14 +1,17 @@
-// src/pages/Dashboard.js - Αλλαγές στην σελίδα του Dashboard
+// src/pages/Dashboard.js - Προσθήκη κουμπιού ρυθμίσεων
 import React, { useState, useEffect } from 'react';
 import TradingBotPanel from '../components/TradingBotPanel';
+import BotSettingsPanel from '../components/BotSettingsPanel';
 import { connectSocket } from '../services/socketService';
 import axios from 'axios';
+import '../components/BotSettingsPanel.css';
 
 const Dashboard = () => {
   const [loading, setLoading] = useState(true);
   const [portfolio, setPortfolio] = useState(null);
   const [transactions, setTransactions] = useState([]);
   const [btcPrice, setBtcPrice] = useState(null);
+  const [isSettingsPanelOpen, setIsSettingsPanelOpen] = useState(false);
 
   useEffect(() => {
     // Φόρτωση αρχικών δεδομένων
@@ -84,7 +87,21 @@ const Dashboard = () => {
 
   return (
     <div className="dashboard">
-      <h1>Trading Bot Dashboard</h1>
+      <div className="dashboard-header">
+        <h1>Trading Bot Dashboard</h1>
+        <button 
+          className="settings-button"
+          onClick={() => setIsSettingsPanelOpen(true)}
+        >
+          <i className="fas fa-cog"></i> Ρυθμίσεις Bot
+        </button>
+      </div>
+      
+      {/* Panel ρυθμίσεων Bot */}
+      <BotSettingsPanel 
+        isOpen={isSettingsPanelOpen} 
+        onClose={() => setIsSettingsPanelOpen(false)} 
+      />
       
       <div className="portfolio-summary">
         <div className="summary-card">
