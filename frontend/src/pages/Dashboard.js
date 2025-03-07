@@ -1,4 +1,4 @@
-// src/pages/Dashboard.js
+// src/pages/Dashboard.js - Αλλαγές στην σελίδα του Dashboard
 import React, { useState, useEffect } from 'react';
 import TradingBotPanel from '../components/TradingBotPanel';
 import { connectSocket } from '../services/socketService';
@@ -8,11 +8,18 @@ const Dashboard = () => {
   const [loading, setLoading] = useState(true);
   const [portfolio, setPortfolio] = useState(null);
   const [transactions, setTransactions] = useState([]);
+  const [btcPrice, setBtcPrice] = useState(null);
 
   useEffect(() => {
     // Φόρτωση αρχικών δεδομένων
     const fetchData = async () => {
       try {
+        // Λήψη της τιμής του BTC σε USD για μετατροπές
+        const btcPriceRes = await axios.get('/api/market-data/price/BTCUSDT');
+        if (btcPriceRes.data && btcPriceRes.data.price) {
+          setBtcPrice(btcPriceRes.data.price);
+        }
+        
         // Λήψη χαρτοφυλακίου από το API
         const portfolioRes = await axios.get('/api/virtual-trade/portfolio');
         setPortfolio(portfolioRes.data);
@@ -45,12 +52,31 @@ const Dashboard = () => {
       setTransactions(prev => [newTx, ...prev]);
     });
     
+    // Ακρόαση για ενημερώσεις τιμής BTC
+    socket.on('price_update', (data) => {
+      if (data.symbol === 'BTCUSDT') {
+        setBtcPrice(data.price);
+      }
+    });
+    
     // Καθαρισμός κατά την αποσύνδεση
     return () => {
       socket.off('portfolio_update');
       socket.off('transaction_created');
+      socket.off('price_update');
     };
   }, []);
+
+  // Μετατροπή USD σε BTC
+  const usdToBtc = (usdAmount) => {
+    if (!btcPrice || !usdAmount) return 0;
+    return usdAmount / btcPrice;
+  };
+
+  // Μορφοποίηση των τιμών BTC
+  const formatBtcValue = (btcValue) => {
+    return btcValue ? `₿${btcValue.toFixed(8)}` : '₿0.00000000';
+  };
 
   if (loading) {
     return <div className="loading">Loading dashboard data...</div>;
@@ -63,16 +89,31 @@ const Dashboard = () => {
       <div className="portfolio-summary">
         <div className="summary-card">
           <div className="label">Total Equity</div>
-          <div className="value">${portfolio?.equity?.toFixed(2) || '0.00'}</div>
+          <div className="value">
+            {formatBtcValue(usdToBtc(portfolio?.equity || 0))}
+            <div className="sub-value">${portfolio?.equity?.toFixed(2) || '0.00'}</div>
+          </div>
         </div>
         <div className="summary-card">
           <div className="label">Available Balance</div>
-          <div className="value">${portfolio?.balance?.toFixed(2) || '0.00'}</div>
+          <div className="value">
+            {formatBtcValue(usdToBtc(portfolio?.balance || 0))}
+            <div className="sub-value">${portfolio?.balance?.toFixed(2) || '0.00'}</div>
+          </div>
         </div>
         <div className="summary-card">
           <div className="label">Assets Value</div>
           <div className="value">
-            ${((portfolio?.equity || 0) - (portfolio?.balance || 0)).toFixed(2)}
+            {formatBtcValue(usdToBtc((portfolio?.equity || 0) - (portfolio?.balance || 0)))}
+            <div className="sub-value">
+              ${((portfolio?.equity || 0) - (portfolio?.balance || 0)).toFixed(2)}
+            </div>
+          </div>
+        </div>
+        <div className="summary-card">
+          <div className="label">BTC Price</div>
+          <div className="value">
+            ${btcPrice ? btcPrice.toFixed(2) : 'Loading...'}
           </div>
         </div>
       </div>
@@ -93,28 +134,39 @@ const Dashboard = () => {
                     <tr>
                       <th>Symbol</th>
                       <th>Quantity</th>
-                      <th>Avg. Price</th>
-                      <th>Current Price</th>
-                      <th>Value</th>
+                      <th>Avg. Price (BTC)</th>
+                      <th>Current Price (BTC)</th>
+                      <th>Value (BTC)</th>
                       <th>P&L</th>
                     </tr>
                   </thead>
                   <tbody>
                     {portfolio.assets.map((asset, index) => {
-                      const value = asset.quantity * asset.currentPrice;
-                      const cost = asset.quantity * asset.averagePrice;
+                      // Υπολογισμός τιμών σε BTC αν πρόκειται για ζεύγος με USDT
+                      const priceBTC = asset.symbol.endsWith('USDT') 
+                        ? asset.currentPrice / btcPrice 
+                        : asset.currentPrice;
+                      const avgPriceBTC = asset.symbol.endsWith('USDT') 
+                        ? asset.averagePrice / btcPrice 
+                        : asset.averagePrice;
+                      
+                      const value = asset.quantity * priceBTC;
+                      const cost = asset.quantity * avgPriceBTC;
                       const pnl = value - cost;
                       const pnlPercentage = (pnl / cost) * 100;
                       
+                      // Αλλάζουμε την εμφάνιση του συμβόλου αν είναι σε BTC
+                      const displaySymbol = asset.symbol.replace('USDT', '');
+                      
                       return (
                         <tr key={index}>
-                          <td>{asset.symbol}</td>
+                          <td>{displaySymbol}</td>
                           <td>{asset.quantity.toFixed(6)}</td>
-                          <td>${asset.averagePrice.toFixed(2)}</td>
-                          <td>${asset.currentPrice.toFixed(2)}</td>
-                          <td>${value.toFixed(2)}</td>
+                          <td>{formatBtcValue(avgPriceBTC)}</td>
+                          <td>{formatBtcValue(priceBTC)}</td>
+                          <td>{formatBtcValue(value)}</td>
                           <td className={pnl >= 0 ? 'profit' : 'loss'}>
-                            ${pnl.toFixed(2)} ({pnlPercentage.toFixed(2)}%)
+                            {formatBtcValue(pnl)} ({pnlPercentage.toFixed(2)}%)
                           </td>
                         </tr>
                       );
@@ -139,23 +191,36 @@ const Dashboard = () => {
                     <th>Action</th>
                     <th>Symbol</th>
                     <th>Quantity</th>
-                    <th>Price</th>
-                    <th>Value</th>
+                    <th>Price (BTC)</th>
+                    <th>Value (BTC)</th>
                     <th>Signal</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {transactions.map((tx, index) => (
-                    <tr key={index} className={tx.action === 'BUY' ? 'buy' : 'sell'}>
-                      <td>{new Date(tx.timestamp).toLocaleString()}</td>
-                      <td>{tx.action}</td>
-                      <td>{tx.symbol}</td>
-                      <td>{tx.quantity.toFixed(6)}</td>
-                      <td>${tx.price.toFixed(2)}</td>
-                      <td>${Math.abs(tx.value).toFixed(2)}</td>
-                      <td>{tx.signal}</td>
-                    </tr>
-                  ))}
+                  {transactions.map((tx, index) => {
+                    // Μετατροπή τιμών σε BTC αν χρειάζεται
+                    const priceBTC = tx.symbol.endsWith('USDT') 
+                      ? tx.price / (btcPrice || 1) 
+                      : tx.price;
+                    const valueBTC = tx.symbol.endsWith('USDT')
+                      ? Math.abs(tx.value) / (btcPrice || 1)
+                      : Math.abs(tx.value);
+                    
+                    // Αλλαγή εμφάνισης συμβόλου
+                    const displaySymbol = tx.symbol.replace('USDT', '');
+                    
+                    return (
+                      <tr key={index} className={tx.action === 'BUY' ? 'buy' : 'sell'}>
+                        <td>{new Date(tx.timestamp).toLocaleString()}</td>
+                        <td>{tx.action}</td>
+                        <td>{displaySymbol}</td>
+                        <td>{tx.quantity.toFixed(6)}</td>
+                        <td>{formatBtcValue(priceBTC)}</td>
+                        <td>{formatBtcValue(valueBTC)}</td>
+                        <td>{tx.signal}</td>
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
             </div>

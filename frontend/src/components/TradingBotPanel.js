@@ -1,9 +1,9 @@
-// src/components/TradingBotPanel.js
+
 import React, { useState, useEffect } from 'react';
 import { connectSocket, startBot, stopBot } from '../services/socketService';
 
 const TradingBotPanel = () => {
-  const [symbol, setSymbol] = useState('BTCUSDT');
+  const [symbol, setSymbol] = useState('ETHBTC'); // Αλλαγή από BTCUSDT σε ETHBTC
   const [interval, setInterval] = useState('5m');
   const [isRunning, setIsRunning] = useState(false);
   const [signals, setSignals] = useState([]);
@@ -64,6 +64,11 @@ const TradingBotPanel = () => {
     stopBot(symbol, interval);
   };
 
+  // Μορφοποίηση τιμής με BTC
+  const formatBTCPrice = (price) => {
+    return price ? `₿${parseFloat(price).toFixed(8)}` : 'Loading...';
+  };
+
   return (
     <div className="trading-bot-panel">
       <div className="bot-controls">
@@ -76,12 +81,13 @@ const TradingBotPanel = () => {
               onChange={(e) => setSymbol(e.target.value)}
               disabled={isRunning}
             >
-              <option value="BTCUSDT">Bitcoin (BTC/USDT)</option>
-              <option value="ETHUSDT">Ethereum (ETH/USDT)</option>
-              <option value="BNBUSDT">Binance Coin (BNB/USDT)</option>
-              <option value="ADAUSDT">Cardano (ADA/USDT)</option>
-              <option value="DOGEUSDT">Dogecoin (DOGE/USDT)</option>
-              <option value="SOLUSDT">Solana (SOL/USDT)</option>
+              <option value="ETHBTC">Ethereum (ETH/BTC)</option>
+              <option value="BNBBTC">Binance Coin (BNB/BTC)</option>
+              <option value="ADABTC">Cardano (ADA/BTC)</option>
+              <option value="DOGEBTC">Dogecoin (DOGE/BTC)</option>
+              <option value="SOLBTC">Solana (SOL/BTC)</option>
+              <option value="XRPBTC">Ripple (XRP/BTC)</option>
+              <option value="DOTBTC">Polkadot (DOT/BTC)</option>
             </select>
           </div>
           
@@ -111,7 +117,7 @@ const TradingBotPanel = () => {
           <div className="form-group">
             <label>Current Price:</label>
             <div className="price-display">
-              {lastPrice ? `$${parseFloat(lastPrice).toFixed(2)}` : 'Loading...'}
+              {formatBTCPrice(lastPrice)}
             </div>
           </div>
         </div>
@@ -151,17 +157,17 @@ const TradingBotPanel = () => {
             
             <div className="indicator">
               <div className="indicator-label">EMA 9</div>
-              <div className="indicator-value">{indicators.ema9.toFixed(2)}</div>
+              <div className="indicator-value">{indicators.ema9.toFixed(8)}</div>
             </div>
             
             <div className="indicator">
               <div className="indicator-label">EMA 21</div>
-              <div className="indicator-value">{indicators.ema21.toFixed(2)}</div>
+              <div className="indicator-value">{indicators.ema21.toFixed(8)}</div>
             </div>
             
             <div className="indicator">
               <div className="indicator-label">Fibonacci 61.8%</div>
-              <div className="indicator-value">{indicators.fibonacci.level61_8.toFixed(2)}</div>
+              <div className="indicator-value">{indicators.fibonacci.level61_8.toFixed(8)}</div>
             </div>
           </div>
         </div>
@@ -177,7 +183,7 @@ const TradingBotPanel = () => {
                   <th>Time</th>
                   <th>Signal</th>
                   <th>Action</th>
-                  <th>Price</th>
+                  <th>Price (BTC)</th>
                   <th>Reason</th>
                 </tr>
               </thead>
@@ -187,7 +193,7 @@ const TradingBotPanel = () => {
                     <td>{new Date(signal.time).toLocaleTimeString()}</td>
                     <td>{signal.indicator}</td>
                     <td>{signal.action}</td>
-                    <td>${parseFloat(signal.price).toFixed(2)}</td>
+                    <td>₿{parseFloat(signal.price).toFixed(8)}</td>
                     <td>{signal.reason}</td>
                   </tr>
                 ))}

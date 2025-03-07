@@ -1,13 +1,33 @@
-// src/components/TradeForm.js
-import React, { useState } from 'react';
+// src/components/TradeForm.js - Αλλαγές
+import React, { useState, useEffect } from 'react';
+import axios from 'axios';
 
 const TradeForm = ({ onTrade, balance }) => {
-  const [symbol, setSymbol] = useState('BTC');
+  const [symbol, setSymbol] = useState('ETH');
   const [action, setAction] = useState('BUY');
   const [quantity, setQuantity] = useState('');
-  const [price, setPrice] = useState('35000');
+  const [price, setPrice] = useState('0.05');  // Αλλαγμένη προεπιλεγμένη τιμή για BTC
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
+  const [btcBalance, setBtcBalance] = useState(0);
+  
+  // Εκτίμηση του BTC υπολοίπου με βάση το USD υπόλοιπο
+  useEffect(() => {
+    const fetchBtcPrice = async () => {
+      try {
+        const response = await axios.get('/api/market-data/price/BTCUSDT');
+        if (response.data && response.data.price) {
+          // Μετατροπή του USD υπολοίπου σε BTC
+          const btcValue = balance / response.data.price;
+          setBtcBalance(btcValue);
+        }
+      } catch (error) {
+        console.error('Error fetching BTC price:', error);
+      }
+    };
+    
+    fetchBtcPrice();
+  }, [balance]);
 
   const handleSubmit = (e) => {
     e.preventDefault();
@@ -27,15 +47,15 @@ const TradeForm = ({ onTrade, balance }) => {
 
     const tradeValue = parseFloat(quantity) * parseFloat(price);
 
-    // Έλεγχος για αγορά με βάση το διαθέσιμο υπόλοιπο
-    if (action === 'BUY' && tradeValue > balance) {
-      setError(`Insufficient balance. Available: $${balance.toFixed(2)}`);
+    // Έλεγχος για αγορά με βάση το διαθέσιμο υπόλοιπο (τώρα σε BTC)
+    if (action === 'BUY' && tradeValue > btcBalance) {
+      setError(`Insufficient BTC balance. Available: ₿${btcBalance.toFixed(8)}`);
       return;
     }
 
     // Προσομοίωση της συναλλαγής
     const tradeData = {
-      symbol,
+      symbol: `${symbol}BTC`, // Προσθήκη του BTC ως βασικό ζεύγος
       action,
       quantity: parseFloat(quantity),
       price: parseFloat(price),
@@ -46,7 +66,7 @@ const TradeForm = ({ onTrade, balance }) => {
     onTrade(tradeData);
     
     // Επιτυχής συναλλαγή
-    setSuccess(`${action} ${quantity} ${symbol} @ $${price} executed successfully!`);
+    setSuccess(`${action} ${quantity} ${symbol} @ ₿${price} executed successfully!`);
     setQuantity(''); // Καθαρισμός πεδίου ποσότητας μετά την επιτυχή συναλλαγή
   };
 
@@ -61,10 +81,12 @@ const TradeForm = ({ onTrade, balance }) => {
         <div className="form-group">
           <label>Symbol:</label>
           <select value={symbol} onChange={(e) => setSymbol(e.target.value)}>
-            <option value="BTC">Bitcoin (BTC)</option>
             <option value="ETH">Ethereum (ETH)</option>
+            <option value="BNB">Binance Coin (BNB)</option>
             <option value="ADA">Cardano (ADA)</option>
             <option value="SOL">Solana (SOL)</option>
+            <option value="XRP">Ripple (XRP)</option>
+            <option value="DOT">Polkadot (DOT)</option>
           </select>
         </div>
         
@@ -101,13 +123,13 @@ const TradeForm = ({ onTrade, balance }) => {
         </div>
         
         <div className="form-group">
-          <label>Price (USD):</label>
+          <label>Price (BTC):</label>
           <input 
             type="number" 
             value={price} 
             onChange={(e) => setPrice(e.target.value)}
-            placeholder="Enter price"
-            step="0.01"
+            placeholder="Enter price in BTC"
+            step="0.00000001"
             min="0"
           />
         </div>
@@ -115,7 +137,7 @@ const TradeForm = ({ onTrade, balance }) => {
         <div className="form-group">
           <label>Total Value:</label>
           <div className="total-value">
-            ${((parseFloat(quantity) || 0) * (parseFloat(price) || 0)).toFixed(2)}
+            ₿{((parseFloat(quantity) || 0) * (parseFloat(price) || 0)).toFixed(8)}
           </div>
         </div>
         

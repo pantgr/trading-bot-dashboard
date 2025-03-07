@@ -32,14 +32,38 @@ global.db = {
 global.db.portfolios.set('default', {
   userId: 'default',
   balance: 10000,
+  btcBalance: 0, // Προσθήκη πεδίου για BTC balance
   assets: [],
   equity: 10000,
+  btcEquity: 0, // Προσθήκη πεδίου για BTC equity
   createdAt: Date.now(),
   updatedAt: Date.now()
 });
 
 console.log('Using in-memory storage instead of MongoDB');
 console.log('Default portfolio initialized:', global.db.portfolios.get('default'));
+
+// Βοηθητική συνάρτηση για μετατροπή USD σε BTC
+async function convertUSDtoBTC(usdAmount) {
+  try {
+    const btcPrice = await binanceService.getCurrentPrice('BTCUSDT');
+    return usdAmount / btcPrice;
+  } catch (error) {
+    console.error('Error converting USD to BTC:', error);
+    return 0;
+  }
+}
+
+// Βοηθητική συνάρτηση για μετατροπή BTC σε USD
+async function convertBTCtoUSD(btcAmount) {
+  try {
+    const btcPrice = await binanceService.getCurrentPrice('BTCUSDT');
+    return btcAmount * btcPrice;
+  } catch (error) {
+    console.error('Error converting BTC to USD:', error);
+    return 0;
+  }
+}
 
 // Αρχικά routes
 app.get('/api/health', (req, res) => {
@@ -154,15 +178,17 @@ app.get('/api/bot/active-symbols', (req, res) => {
 });
 
 // API για virtual trading - Χαρτοφυλάκιο
-app.get('/api/virtual-trade/portfolio', (req, res) => {
+app.get('/api/virtual-trade/portfolio', async (req, res) => {
   const userId = req.query.userId || 'default';
   console.log(`Fetching portfolio for user: ${userId}`);
   
-  const portfolio = global.db.portfolios.get(userId) || {
+  let portfolio = global.db.portfolios.get(userId) || {
     userId,
     balance: 10000,
+    btcBalance: 0, // Προσθήκη BTC balance
     assets: [],
     equity: 10000,
+    btcEquity: 0, // Προσθήκη BTC equity
     createdAt: Date.now(),
     updatedAt: Date.now()
   };
@@ -171,6 +197,37 @@ app.get('/api/virtual-trade/portfolio', (req, res) => {
   if (!global.db.portfolios.has(userId)) {
     global.db.portfolios.set(userId, portfolio);
     console.log(`Created new portfolio for user: ${userId}`);
+  }
+  
+  // Ενημέρωση των τιμών BTC σε πραγματικό χρόνο
+  try {
+    const btcPrice = await binanceService.getCurrentPrice('BTCUSDT');
+    portfolio.btcBalance = portfolio.balance / btcPrice;
+    
+    // Ενημέρωση των τιμών των assets
+    for (const asset of portfolio.assets) {
+      if (asset.symbol.endsWith('USDT')) {
+        // Υπολογισμός της ισοδύναμης τιμής σε BTC
+        asset.btcPrice = asset.currentPrice / btcPrice;
+      } else if (asset.symbol.endsWith('BTC')) {
+        // Ήδη σε BTC, δεν χρειάζεται μετατροπή
+        asset.btcPrice = asset.currentPrice;
+      }
+    }
+    
+    // Υπολογισμός του συνολικού equity σε BTC
+    const assetsValueBTC = portfolio.assets.reduce((sum, asset) => {
+      const priceBTC = asset.btcPrice || (asset.currentPrice / btcPrice);
+      return sum + (asset.quantity * priceBTC);
+    }, 0);
+    
+    portfolio.btcEquity = portfolio.btcBalance + assetsValueBTC;
+    portfolio.updatedAt = Date.now();
+    
+    // Αποθήκευση των αλλαγών
+    global.db.portfolios.set(userId, portfolio);
+  } catch (error) {
+    console.error('Error updating BTC values:', error);
   }
   
   console.log('Returning portfolio:', portfolio);
@@ -189,10 +246,10 @@ app.get('/api/virtual-trade/history', (req, res) => {
 });
 
 // API για virtual trading - Εκτέλεση συναλλαγής
-app.post('/api/virtual-trade/execute', (req, res) => {
+app.post('/api/virtual-trade/execute', async (req, res) => {
   try {
     const { userId = 'default', symbol, action, quantity, price } = req.body;
-    console.log(`Executing trade: ${action} ${quantity} ${symbol} @ $${price} for user ${userId}`);
+    console.log(`Executing trade: ${action} ${quantity} ${symbol} @ price ${price} for user ${userId}`);
     
     if (!symbol || !action || !quantity || !price) {
       console.log('Missing required parameters');
@@ -210,8 +267,10 @@ app.post('/api/virtual-trade/execute', (req, res) => {
       portfolio = {
         userId,
         balance: 10000,
+        btcBalance: 0,
         assets: [],
         equity: 10000,
+        btcEquity: 0,
         createdAt: Date.now(),
         updatedAt: Date.now()
       };
@@ -222,18 +281,46 @@ app.post('/api/virtual-trade/execute', (req, res) => {
     const parsedQuantity = parseFloat(quantity);
     const parsedPrice = parseFloat(price);
     
+    // Έλεγχος αν είναι ζεύγος με BTC
+    const isBtcPair = symbol.endsWith('BTC');
+    const btcPrice = await binanceService.getCurrentPrice('BTCUSDT');
+    
+    // Αν δεν έχει υπολογιστεί το btcBalance, το υπολογίζουμε τώρα
+    if (portfolio.btcBalance === undefined || portfolio.btcBalance === 0) {
+      portfolio.btcBalance = portfolio.balance / btcPrice;
+    }
+    
     // Εκτέλεση συναλλαγής
     if (action === 'BUY') {
-      const cost = parsedQuantity * parsedPrice;
-      
-      // Έλεγχος επαρκούς υπολοίπου
-      if (portfolio.balance < cost) {
-        console.log(`Insufficient balance: ${portfolio.balance} < ${cost}`);
-        return res.status(400).json({ error: 'Insufficient balance' });
+      // Ανάλογα με το ζεύγος, υπολογίζουμε το κόστος
+      let cost;
+      if (isBtcPair) {
+        // Άμεσο κόστος σε BTC
+        cost = parsedQuantity * parsedPrice;
+        
+        // Έλεγχος επαρκούς υπολοίπου σε BTC
+        if (portfolio.btcBalance < cost) {
+          console.log(`Insufficient BTC balance: ${portfolio.btcBalance} < ${cost}`);
+          return res.status(400).json({ error: 'Insufficient BTC balance' });
+        }
+        
+        // Ενημέρωση υπολοίπου σε BTC και USD
+        portfolio.btcBalance -= cost;
+        portfolio.balance = portfolio.btcBalance * btcPrice;
+      } else {
+        // Κόστος σε USD
+        cost = parsedQuantity * parsedPrice;
+        
+        // Έλεγχος επαρκούς υπολοίπου σε USD
+        if (portfolio.balance < cost) {
+          console.log(`Insufficient balance: ${portfolio.balance} < ${cost}`);
+          return res.status(400).json({ error: 'Insufficient balance' });
+        }
+        
+        // Ενημέρωση υπολοίπου σε USD και BTC
+        portfolio.balance -= cost;
+        portfolio.btcBalance = portfolio.balance / btcPrice;
       }
-      
-      // Ενημέρωση υπολοίπου
-      portfolio.balance -= cost;
       
       // Προσθήκη ή ενημέρωση asset
       const assetIndex = portfolio.assets.findIndex(a => a.symbol === symbol);
@@ -249,16 +336,31 @@ app.post('/api/virtual-trade/execute', (req, res) => {
         portfolio.assets[assetIndex].averagePrice = newValue / newQuantity;
         portfolio.assets[assetIndex].currentPrice = parsedPrice;
         
+        // Αν είναι ζεύγος με BTC, αποθηκεύουμε και την BTC τιμή
+        if (isBtcPair) {
+          portfolio.assets[assetIndex].btcPrice = parsedPrice;
+        } else {
+          portfolio.assets[assetIndex].btcPrice = parsedPrice / btcPrice;
+        }
+        
         console.log(`Updated asset: ${symbol}, new quantity: ${newQuantity}`);
       } else {
         // Προσθήκη νέου asset
-        portfolio.assets.push({
+        const newAsset = {
           symbol,
           quantity: parsedQuantity,
           averagePrice: parsedPrice,
           currentPrice: parsedPrice
-        });
+        };
         
+        // Αν είναι ζεύγος με BTC, αποθηκεύουμε και την BTC τιμή
+        if (isBtcPair) {
+          newAsset.btcPrice = parsedPrice;
+        } else {
+          newAsset.btcPrice = parsedPrice / btcPrice;
+        }
+        
+        portfolio.assets.push(newAsset);
         console.log(`Added new asset: ${symbol}, quantity: ${parsedQuantity}`);
       }
     } 
@@ -279,16 +381,36 @@ app.post('/api/virtual-trade/execute', (req, res) => {
         return res.status(400).json({ error: `Insufficient ${symbol} quantity` });
       }
       
-      const revenue = parsedQuantity * parsedPrice;
-      
-      // Ενημέρωση υπολοίπου
-      portfolio.balance += revenue;
+      // Υπολογισμός του εσόδου
+      let revenue;
+      if (isBtcPair) {
+        // Άμεσο έσοδο σε BTC
+        revenue = parsedQuantity * parsedPrice;
+        
+        // Ενημέρωση υπολοίπου σε BTC και USD
+        portfolio.btcBalance += revenue;
+        portfolio.balance = portfolio.btcBalance * btcPrice;
+      } else {
+        // Έσοδο σε USD
+        revenue = parsedQuantity * parsedPrice;
+        
+        // Ενημέρωση υπολοίπου σε USD και BTC
+        portfolio.balance += revenue;
+        portfolio.btcBalance = portfolio.balance / btcPrice;
+      }
       
       // Ενημέρωση ποσότητας asset
       asset.quantity -= parsedQuantity;
       asset.currentPrice = parsedPrice;
       
-      console.log(`Sold ${parsedQuantity} of ${symbol} for $${revenue}`);
+      // Αν είναι ζεύγος με BTC, αποθηκεύουμε και την BTC τιμή
+      if (isBtcPair) {
+        asset.btcPrice = parsedPrice;
+      } else {
+        asset.btcPrice = parsedPrice / btcPrice;
+      }
+      
+      console.log(`Sold ${parsedQuantity} of ${symbol} for ${isBtcPair ? '₿' : '$'}${revenue}`);
       
       // Αφαίρεση asset αν η ποσότητα είναι 0
       if (asset.quantity <= 0) {
@@ -297,13 +419,31 @@ app.post('/api/virtual-trade/execute', (req, res) => {
       }
     }
     
-    // Υπολογισμός νέου portfolio equity
-    const assetsValue = portfolio.assets.reduce(
-      (sum, asset) => sum + (asset.quantity * asset.currentPrice), 
+    // Υπολογισμός νέου portfolio equity σε USD
+    const assetsValueUSD = portfolio.assets.reduce(
+      (sum, asset) => {
+        const priceUSD = asset.symbol.endsWith('BTC') 
+          ? asset.currentPrice * btcPrice 
+          : asset.currentPrice;
+        return sum + (asset.quantity * priceUSD);
+      }, 
       0
     );
     
-    portfolio.equity = portfolio.balance + assetsValue;
+    portfolio.equity = portfolio.balance + assetsValueUSD;
+    
+    // Υπολογισμός νέου portfolio equity σε BTC
+    const assetsValueBTC = portfolio.assets.reduce(
+      (sum, asset) => {
+        const priceBTC = asset.symbol.endsWith('BTC') 
+          ? asset.currentPrice 
+          : asset.btcPrice || (asset.currentPrice / btcPrice);
+        return sum + (asset.quantity * priceBTC);
+      }, 
+      0
+    );
+    
+    portfolio.btcEquity = portfolio.btcBalance + assetsValueBTC;
     portfolio.updatedAt = Date.now();
     
     // Καταγραφή συναλλαγής
@@ -314,7 +454,14 @@ app.post('/api/virtual-trade/execute', (req, res) => {
       action,
       quantity: parsedQuantity,
       price: parsedPrice,
-      value: action === 'BUY' ? -(parsedQuantity * parsedPrice) : (parsedQuantity * parsedPrice),
+      // Αποθήκευση και των δύο τιμών για μελλοντική αναφορά
+      valueUSD: isBtcPair 
+        ? (action === 'BUY' ? -(parsedQuantity * parsedPrice * btcPrice) : (parsedQuantity * parsedPrice * btcPrice))
+        : (action === 'BUY' ? -(parsedQuantity * parsedPrice) : (parsedQuantity * parsedPrice)),
+      valueBTC: isBtcPair
+        ? (action === 'BUY' ? -(parsedQuantity * parsedPrice) : (parsedQuantity * parsedPrice))
+        : (action === 'BUY' ? -(parsedQuantity * parsedPrice / btcPrice) : (parsedQuantity * parsedPrice / btcPrice)),
+      btcPrice: btcPrice, // Αποθήκευση της τιμής BTC κατά τη στιγμή της συναλλαγής
       timestamp: Date.now(),
       signal: 'MANUAL'
     };
@@ -381,6 +528,18 @@ io.on('connection', (socket) => {
       
       // Εγγραφή στις ενημερώσεις τιμών
       binanceService.subscribeToCandleUpdates(symbol, interval, priceCallback);
+      
+      // Αν ο χρήστης έχει εγγραφεί στο BTCUSDT, στέλνουμε ενημερώσεις τιμής και σε όλους
+      if (symbol === 'BTCUSDT') {
+        const btcPriceCallback = (candle) => {
+          io.emit('btc_price_update', {
+            price: candle.close,
+            time: candle.time
+          });
+        };
+        socket.btcPriceCallback = btcPriceCallback;
+        binanceService.subscribeToCandleUpdates('BTCUSDT', '1m', btcPriceCallback);
+      }
     } catch (error) {
       console.error(`Error subscribing to market data for ${symbol}:`, error);
       socket.emit('error', { 
@@ -404,6 +563,12 @@ io.on('connection', (socket) => {
       );
       
       delete socket.priceCallbacks[`${symbol}-${interval}`];
+    }
+    
+    // Αν ο χρήστης είχε εγγραφεί στο BTCUSDT, ακυρώνουμε το callback
+    if (symbol === 'BTCUSDT' && socket.btcPriceCallback) {
+      binanceService.unsubscribeFromCandleUpdates('BTCUSDT', '1m', socket.btcPriceCallback);
+      delete socket.btcPriceCallback;
     }
   });
   
@@ -472,12 +637,31 @@ io.on('connection', (socket) => {
         binanceService.unsubscribeFromCandleUpdates(symbol, interval, callback);
       }
     }
+    
+    // Ακύρωση της συνδρομής BTC αν υπάρχει
+    if (socket.btcPriceCallback) {
+      binanceService.unsubscribeFromCandleUpdates('BTCUSDT', '1m', socket.btcPriceCallback);
+    }
   });
 });
 
 // Event listeners για το trading bot
-tradingBot.on('trade_signal', (signal) => {
+tradingBot.on('trade_signal', async (signal) => {
   console.log(`New trade signal: ${signal.action} ${signal.symbol} (${signal.indicator})`);
+  
+  // Ελέγχουμε αν το σύμβολο είναι σε ζεύγος με BTC
+  const isBtcPair = signal.symbol.endsWith('BTC');
+  
+  // Αν είναι USD ζεύγος, μετατρέπουμε την τιμή και σε BTC για αναφορά
+  if (!isBtcPair && signal.price) {
+    try {
+      const btcPrice = await binanceService.getCurrentPrice('BTCUSDT');
+      signal.btcPrice = signal.price / btcPrice;
+      signal.btcValue = signal.value / btcPrice;
+    } catch (error) {
+      console.error('Error converting signal price to BTC:', error);
+    }
+  }
   
   // Αποστολή του σήματος στους συνδεδεμένους clients
   io.emit('trade_signal', signal);
@@ -485,126 +669,277 @@ tradingBot.on('trade_signal', (signal) => {
   // Εκτέλεση αυτόματης συναλλαγής μόνο για σήματα CONSENSUS
   if (signal.indicator === 'CONSENSUS') {
     console.log(`Processing consensus-based trade: ${signal.action} for ${signal.symbol}`);
-	
-	// Προαιρετικά: Αυτόματη εκτέλεση συναλλαγής
-	if (global.db.portfolios.has(signal.userId)) {
-		const portfolio = global.db.portfolios.get(signal.userId);
-		
-    // Έλεγχος αν υπάρχει διαθέσιμο υπόλοιπο για αγορά ή asset για πώληση
-    if (signal.action === 'BUY') {
-      // Υπολογισμός ποσού επένδυσης (π.χ. 10% του διαθέσιμου υπολοίπου)
-      const investmentAmount = portfolio.balance * 0.1;
-      const quantity = investmentAmount / signal.price;
+    
+    // Προαιρετικά: Αυτόματη εκτέλεση συναλλαγής
+    if (global.db.portfolios.has(signal.userId)) {
+      const portfolio = global.db.portfolios.get(signal.userId);
       
-      if (portfolio.balance >= investmentAmount && quantity > 0) {
-        // Εκτέλεση αγοράς
-        portfolio.balance -= investmentAmount;
+      // Λήψη της τιμής BTC αν χρειάζεται για μετατροπές
+      let btcPrice = 0;
+      if (!isBtcPair) {
+        try {
+          btcPrice = await binanceService.getCurrentPrice('BTCUSDT');
+        } catch (error) {
+          console.error('Error fetching BTC price for consensus trade:', error);
+          return; // Αποτυχία λήψης τιμής BTC, ακύρωση συναλλαγής
+        }
+      }
+      
+      // Έλεγχος αν υπάρχει διαθέσιμο υπόλοιπο για αγορά ή asset για πώληση
+      if (signal.action === 'BUY') {
+        // Υπολογισμός ποσού επένδυσης (π.χ. 10% του διαθέσιμου υπολοίπου)
+        let investmentAmount, quantity;
         
-        // Προσθήκη ή ενημέρωση του asset
+        if (isBtcPair) {
+          // Επένδυση 10% του BTC υπολοίπου
+          const btcBalance = portfolio.btcBalance || (portfolio.balance / btcPrice);
+          investmentAmount = btcBalance * 0.1;
+          quantity = investmentAmount / signal.price;
+          
+          if (btcBalance >= investmentAmount && quantity > 0) {
+            // Ενημέρωση υπολοίπου σε BTC
+            portfolio.btcBalance = (portfolio.btcBalance || 0) - investmentAmount;
+            portfolio.balance = portfolio.btcBalance * btcPrice;
+            
+            // Προσθήκη ή ενημέρωση του asset
+            const assetIndex = portfolio.assets.findIndex(a => a.symbol === signal.symbol);
+            
+            if (assetIndex >= 0) {
+              const asset = portfolio.assets[assetIndex];
+              const totalQuantity = asset.quantity + quantity;
+              const totalValue = (asset.quantity * asset.averagePrice) + (quantity * signal.price);
+              
+              asset.quantity = totalQuantity;
+              asset.averagePrice = totalValue / totalQuantity;
+              asset.currentPrice = signal.price;
+              asset.btcPrice = signal.price; // Είναι ήδη σε BTC
+            } else {
+              portfolio.assets.push({
+                symbol: signal.symbol,
+                quantity,
+                averagePrice: signal.price,
+                currentPrice: signal.price,
+                btcPrice: signal.price // Είναι ήδη σε BTC
+              });
+            }
+            
+            // Ενημέρωση του equity
+            const assetsValueBTC = portfolio.assets.reduce(
+              (sum, asset) => {
+                const priceBTC = asset.symbol.endsWith('BTC') 
+                  ? asset.currentPrice 
+                  : (asset.btcPrice || asset.currentPrice / btcPrice);
+                return sum + (asset.quantity * priceBTC);
+              }, 
+              0
+            );
+            
+            portfolio.btcEquity = portfolio.btcBalance + assetsValueBTC;
+            portfolio.equity = portfolio.btcEquity * btcPrice;
+            portfolio.updatedAt = Date.now();
+            
+            // Καταγραφή της συναλλαγής
+            const transaction = {
+              id: Date.now().toString(),
+              userId: signal.userId,
+              symbol: signal.symbol,
+              action: 'BUY',
+              quantity,
+              price: signal.price,
+              valueUSD: -(quantity * signal.price * btcPrice),
+              valueBTC: -(quantity * signal.price),
+              btcPrice,
+              timestamp: Date.now(),
+              signal: signal.indicator
+            };
+            
+            global.db.transactions.push(transaction);
+            
+            // Αποστολή της ενημέρωσης στους συνδεδεμένους clients
+            io.emit('portfolio_update', portfolio);
+            io.emit('transaction_created', transaction);
+            
+            console.log(`Auto-executed BUY for ${signal.userId}: ${quantity} ${signal.symbol} @ ₿${signal.price}`);
+          }
+        } else {
+          // Επένδυση 10% του USD υπολοίπου
+          investmentAmount = portfolio.balance * 0.1;
+          quantity = investmentAmount / signal.price;
+          
+          if (portfolio.balance >= investmentAmount && quantity > 0) {
+            // Ενημέρωση υπολοίπου σε USD
+            portfolio.balance -= investmentAmount;
+            portfolio.btcBalance = portfolio.balance / btcPrice;
+            
+            // Προσθήκη ή ενημέρωση του asset
+            const assetIndex = portfolio.assets.findIndex(a => a.symbol === signal.symbol);
+            
+            if (assetIndex >= 0) {
+              const asset = portfolio.assets[assetIndex];
+              const totalQuantity = asset.quantity + quantity;
+              const totalValue = (asset.quantity * asset.averagePrice) + (quantity * signal.price);
+              
+              asset.quantity = totalQuantity;
+              asset.averagePrice = totalValue / totalQuantity;
+              asset.currentPrice = signal.price;
+              asset.btcPrice = signal.price / btcPrice;
+            } else {
+              portfolio.assets.push({
+                symbol: signal.symbol,
+                quantity,
+                averagePrice: signal.price,
+                currentPrice: signal.price,
+                btcPrice: signal.price / btcPrice
+              });
+            }
+            
+            // Ενημέρωση του equity
+            const assetsValueUSD = portfolio.assets.reduce(
+              (sum, asset) => sum + (asset.quantity * asset.currentPrice), 
+              0
+            );
+            
+            portfolio.equity = portfolio.balance + assetsValueUSD;
+            portfolio.btcEquity = portfolio.equity / btcPrice;
+            portfolio.updatedAt = Date.now();
+            
+            // Καταγραφή της συναλλαγής
+            const transaction = {
+              id: Date.now().toString(),
+              userId: signal.userId,
+              symbol: signal.symbol,
+              action: 'BUY',
+              quantity,
+              price: signal.price,
+              valueUSD: -(quantity * signal.price),
+              valueBTC: -(quantity * signal.price / btcPrice),
+              btcPrice,
+              timestamp: Date.now(),
+              signal: signal.indicator
+            };
+            
+            global.db.transactions.push(transaction);
+            
+            // Αποστολή της ενημέρωσης στους συνδεδεμένους clients
+            io.to(`bot:${signal.userId}`).emit('portfolio_update', portfolio);
+            io.to(`bot:${signal.userId}`).emit('transaction_created', transaction);
+            
+            console.log(`Auto-executed BUY for ${signal.userId}: ${quantity} ${signal.symbol} @ $${signal.price}`);
+          }
+        }
+      } else if (signal.action === 'SELL') {
+        // Έλεγχος αν υπάρχει το asset στο χαρτοφυλάκιο
         const assetIndex = portfolio.assets.findIndex(a => a.symbol === signal.symbol);
         
         if (assetIndex >= 0) {
           const asset = portfolio.assets[assetIndex];
-          const totalQuantity = asset.quantity + quantity;
-          const totalValue = (asset.quantity * asset.averagePrice) + (quantity * signal.price);
           
-          asset.quantity = totalQuantity;
-          asset.averagePrice = totalValue / totalQuantity;
-          asset.currentPrice = signal.price;
-        } else {
-          portfolio.assets.push({
-            symbol: signal.symbol,
-            quantity,
-            averagePrice: signal.price,
-            currentPrice: signal.price
-          });
+          // Πώληση μέρους της θέσης (π.χ. 25%)
+          const sellQuantity = asset.quantity * 0.25;
+          
+          if (isBtcPair) {
+            const revenueBTC = sellQuantity * signal.price;
+            
+            // Ενημέρωση του υπολοίπου και του asset
+            portfolio.btcBalance = (portfolio.btcBalance || 0) + revenueBTC;
+            portfolio.balance = portfolio.btcBalance * btcPrice;
+            asset.quantity -= sellQuantity;
+            asset.currentPrice = signal.price;
+            
+            // Αφαίρεση του asset αν η ποσότητα είναι 0
+            if (asset.quantity <= 0) {
+              portfolio.assets.splice(assetIndex, 1);
+            }
+            
+            // Ενημέρωση του equity
+            const assetsValueBTC = portfolio.assets.reduce(
+              (sum, asset) => {
+                const priceBTC = asset.symbol.endsWith('BTC') 
+                  ? asset.currentPrice 
+                  : (asset.btcPrice || asset.currentPrice / btcPrice);
+                return sum + (asset.quantity * priceBTC);
+              }, 
+              0
+            );
+            
+            portfolio.btcEquity = portfolio.btcBalance + assetsValueBTC;
+            portfolio.equity = portfolio.btcEquity * btcPrice;
+            portfolio.updatedAt = Date.now();
+            
+            // Καταγραφή της συναλλαγής
+            const transaction = {
+              id: Date.now().toString(),
+              userId: signal.userId,
+              symbol: signal.symbol,
+              action: 'SELL',
+              quantity: sellQuantity,
+              price: signal.price,
+              valueUSD: sellQuantity * signal.price * btcPrice,
+              valueBTC: sellQuantity * signal.price,
+              btcPrice,
+              timestamp: Date.now(),
+              signal: signal.indicator
+            };
+            
+            global.db.transactions.push(transaction);
+            
+            // Αποστολή της ενημέρωσης στους συνδεδεμένους clients
+            io.to(`bot:${signal.userId}`).emit('portfolio_update', portfolio);
+            io.to(`bot:${signal.userId}`).emit('transaction_created', transaction);
+            
+            console.log(`Auto-executed SELL for ${signal.userId}: ${sellQuantity} ${signal.symbol} @ ₿${signal.price}`);
+          } else {
+            const revenueUSD = sellQuantity * signal.price;
+            
+            // Ενημέρωση του υπολοίπου και του asset
+            portfolio.balance += revenueUSD;
+            portfolio.btcBalance = portfolio.balance / btcPrice;
+            asset.quantity -= sellQuantity;
+            asset.currentPrice = signal.price;
+            
+            // Αφαίρεση του asset αν η ποσότητα είναι 0
+            if (asset.quantity <= 0) {
+              portfolio.assets.splice(assetIndex, 1);
+            }
+            
+            // Ενημέρωση του equity
+            const assetsValueUSD = portfolio.assets.reduce(
+              (sum, asset) => sum + (asset.quantity * asset.currentPrice), 
+              0
+            );
+            
+            portfolio.equity = portfolio.balance + assetsValueUSD;
+            portfolio.btcEquity = portfolio.equity / btcPrice;
+            portfolio.updatedAt = Date.now();
+            
+            // Καταγραφή της συναλλαγής
+            const transaction = {
+              id: Date.now().toString(),
+              userId: signal.userId,
+              symbol: signal.symbol,
+              action: 'SELL',
+              quantity: sellQuantity,
+              price: signal.price,
+              valueUSD: sellQuantity * signal.price,
+              valueBTC: sellQuantity * signal.price / btcPrice,
+              btcPrice,
+              timestamp: Date.now(),
+              signal: signal.indicator
+            };
+            
+            global.db.transactions.push(transaction);
+            
+            // Αποστολή της ενημέρωσης στους συνδεδεμένους clients
+            io.to(`bot:${signal.userId}`).emit('portfolio_update', portfolio);
+            io.to(`bot:${signal.userId}`).emit('transaction_created', transaction);
+            
+            console.log(`Auto-executed SELL for ${signal.userId}: ${sellQuantity} ${signal.symbol} @ $${signal.price}`);
+          }
         }
-        
-        // Ενημέρωση του equity
-        const assetsValue = portfolio.assets.reduce(
-          (sum, asset) => sum + (asset.quantity * asset.currentPrice), 
-          0
-        );
-        
-        portfolio.equity = portfolio.balance + assetsValue;
-        portfolio.updatedAt = Date.now();
-        
-        // Καταγραφή της συναλλαγής
-        const transaction = {
-          id: Date.now().toString(),
-          userId: signal.userId,
-          symbol: signal.symbol,
-          action: 'BUY',
-          quantity,
-          price: signal.price,
-          value: -(quantity * signal.price),
-          timestamp: Date.now(),
-          signal: signal.indicator
-        };
-        
-        global.db.transactions.push(transaction);
-        
-        // Αποστολή της ενημέρωσης στους συνδεδεμένους clients
-        io.emit('portfolio_update', portfolio);
-        io.emit('transaction_created', transaction);
-        
-        console.log(`Auto-executed BUY for ${signal.userId}: ${quantity} ${signal.symbol} @ $${signal.price}`);
-      }
-    } else if (signal.action === 'SELL') {
-      // Έλεγχος αν υπάρχει το asset στο χαρτοφυλάκιο
-      const assetIndex = portfolio.assets.findIndex(a => a.symbol === signal.symbol);
-      
-      if (assetIndex >= 0) {
-        const asset = portfolio.assets[assetIndex];
-        
-        // Πώληση μέρους της θέσης (π.χ. 25%)
-        const sellQuantity = asset.quantity * 0.25;
-        const revenue = sellQuantity * signal.price;
-        
-        // Ενημέρωση του υπολοίπου και του asset
-        portfolio.balance += revenue;
-        asset.quantity -= sellQuantity;
-        asset.currentPrice = signal.price;
-        
-        // Αφαίρεση του asset αν η ποσότητα είναι 0
-        if (asset.quantity <= 0) {
-          portfolio.assets.splice(assetIndex, 1);
-        }
-        
-        // Ενημέρωση του equity
-        const assetsValue = portfolio.assets.reduce(
-          (sum, asset) => sum + (asset.quantity * asset.currentPrice), 
-          0
-        );
-        
-        portfolio.equity = portfolio.balance + assetsValue;
-        portfolio.updatedAt = Date.now();
-        
-        // Καταγραφή της συναλλαγής
-        const transaction = {
-          id: Date.now().toString(),
-          userId: signal.userId,
-          symbol: signal.symbol,
-          action: 'SELL',
-          quantity: sellQuantity,
-          price: signal.price,
-          value: sellQuantity * signal.price,
-          timestamp: Date.now(),
-          signal: signal.indicator
-        };
-        
-        global.db.transactions.push(transaction);
-        
-        // Αποστολή της ενημέρωσης στους συνδεδεμένους clients
-        io.to(`bot:${signal.userId}`).emit('portfolio_update', portfolio);
-        io.to(`bot:${signal.userId}`).emit('transaction_created', transaction);
-        
-		console.log(`Auto-executed SELL for ${signal.userId}: ${sellQuantity} ${signal.symbol} @ $${signal.price}`);
       }
     }
-  } // Κλείσιμο του if (global.db.portfolios.has(signal.userId))
-  } // Κλείσιμο του if (signal.indicator === 'CONSENSUS')
-}); // Κλείσιμο του tradingBot.on
+  }
+});
 
 tradingBot.on('price_update', (data) => {
   // Αποστολή της ενημέρωσης τιμής στους συνδεδεμένους clients

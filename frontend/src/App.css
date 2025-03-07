@@ -414,3 +414,47 @@ tr.sell td {
     grid-template-columns: 1fr;
   }
 }
+/* Προσθήκες για την εμφάνιση των τιμών BTC */
+.summary-card .value {
+  font-size: 24px;
+  font-weight: bold;
+  color: #1e3a8a;
+}
+
+.summary-card .sub-value {
+  font-size: 14px;
+  color: #64748b;
+  margin-top: 5px;
+}
+
+/* Στυλ για το σύμβολο του Bitcoin */
+.btc-symbol {
+  font-weight: bold;
+  letter-spacing: -1px;
+}
+
+/* Προσαρμογή μεγέθους κελιών για τιμές BTC */
+th, td {
+  text-align: left;
+  padding: 12px;
+  border-bottom: 1px solid #e2e8f0;
+  max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+@media (max-width: 1024px) {
+  th, td {
+    padding: 8px;
+    font-size: 0.9rem;
+  }
+  
+  .summary-card .value {
+    font-size: 20px;
+  }
+  
+  .summary-card .sub-value {
+    font-size: 12px;
+  }
+}

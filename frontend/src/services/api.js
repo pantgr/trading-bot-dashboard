@@ -1,4 +1,4 @@
-// src/services/api.js
+// src/services/api.js - Προσθήκη λειτουργιών για BTC
 import axios from 'axios';
 
 // Χρησιμοποιούμε σχετικό URL που θα περάσει μέσω του proxy
@@ -49,11 +49,47 @@ export const checkServerStatus = async () => {
   }
 };
 
+// Νέο API για λήψη της τρέχουσας τιμής του BTC
+export const fetchBTCPrice = async () => {
+  try {
+    const response = await api.get('/market-data/price/BTCUSDT');
+    return response.data.price;
+  } catch (error) {
+    console.error('Error fetching BTC price:', error);
+    throw error;
+  }
+};
+
+// Νέο API για μετατροπή USD σε BTC
+export const convertUSDtoBTC = async (usdAmount) => {
+  try {
+    const btcPrice = await fetchBTCPrice();
+    return usdAmount / btcPrice;
+  } catch (error) {
+    console.error('Error converting USD to BTC:', error);
+    throw error;
+  }
+};
+
+// Νέο API για μετατροπή BTC σε USD
+export const convertBTCtoUSD = async (btcAmount) => {
+  try {
+    const btcPrice = await fetchBTCPrice();
+    return btcAmount * btcPrice;
+  } catch (error) {
+    console.error('Error converting BTC to USD:', error);
+    throw error;
+  }
+};
+
 // Αντικείμενο με όλες τις λειτουργίες API
 const apiService = {
   fetchPortfolio,
   fetchTransactionHistory,
-  checkServerStatus
+  checkServerStatus,
+  fetchBTCPrice,
+  convertUSDtoBTC,
+  convertBTCtoUSD
 };
 
 export default apiService;
