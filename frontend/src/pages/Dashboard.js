@@ -67,7 +67,7 @@ const Dashboard = () => {
     };
   }, []);
 
-  // Convert USD to BTC
+  // Convert USD to BTC - fixed calculation
   const usdToBtc = (usdAmount) => {
     if (!btcPrice || !usdAmount) return 0;
     return usdAmount / btcPrice;
@@ -77,6 +77,54 @@ const Dashboard = () => {
   const formatBtcValue = (btcValue) => {
     return btcValue ? `₿${btcValue.toFixed(8)}` : '₿0.00000000';
   };
+
+  // FIXED: Calculate total assets value correctly in BTC
+  const calculateAssetsValueBTC = () => {
+    if (!portfolio || !portfolio.assets || portfolio.assets.length === 0) {
+      return 0;
+    }
+
+    return portfolio.assets.reduce((total, asset) => {
+      let assetValueBTC = 0;
+      
+      if (asset.symbol.endsWith('BTC')) {
+        // BTC pairs already have price in BTC
+        assetValueBTC = asset.quantity * asset.currentPrice;
+      } else if (asset.symbol.endsWith('USDT') && btcPrice) {
+        // USDT pairs need conversion to BTC
+        assetValueBTC = asset.quantity * asset.currentPrice / btcPrice;
+      }
+      
+      console.log(`Asset ${asset.symbol}: quantity=${asset.quantity}, price=${asset.currentPrice}, valueBTC=${assetValueBTC}`);
+      
+      return total + assetValueBTC;
+    }, 0);
+  };
+
+  // FIXED: Calculate total assets value in USD
+  const calculateAssetsValueUSD = () => {
+    if (!portfolio || !portfolio.assets || portfolio.assets.length === 0) {
+      return 0;
+    }
+
+    return portfolio.assets.reduce((total, asset) => {
+      let assetValueUSD = 0;
+      
+      if (asset.symbol.endsWith('BTC') && btcPrice) {
+        // Convert BTC pairs to USD
+        assetValueUSD = asset.quantity * asset.currentPrice * btcPrice;
+      } else if (asset.symbol.endsWith('USDT')) {
+        // USDT pairs already have price in USD
+        assetValueUSD = asset.quantity * asset.currentPrice;
+      }
+      
+      return total + assetValueUSD;
+    }, 0);
+  };
+
+  // Use the correct values for display
+  const assetsBTC = calculateAssetsValueBTC();
+  const assetsUSD = calculateAssetsValueUSD();
 
   if (loading) {
     return <div className="loading">Loading dashboard data...</div>;
@@ -103,8 +151,8 @@ const Dashboard = () => {
         <div className="summary-card">
           <div className="label">Total Equity</div>
           <div className="value">
-            {formatBtcValue(usdToBtc(portfolio?.equity || 0))}
-            <div className="sub-value">${portfolio?.equity?.toFixed(2) || '0.00'}</div>
+            {formatBtcValue(usdToBtc(portfolio?.balance || 0) + assetsBTC)}
+            <div className="sub-value">${((portfolio?.balance || 0) + assetsUSD).toFixed(2)}</div>
           </div>
         </div>
         <div className="summary-card">
@@ -117,9 +165,9 @@ const Dashboard = () => {
         <div className="summary-card">
           <div className="label">Assets Value</div>
           <div className="value">
-            {formatBtcValue(usdToBtc((portfolio?.equity || 0) - (portfolio?.balance || 0)))}
+            {formatBtcValue(assetsBTC)}
             <div className="sub-value">
-              ${((portfolio?.equity || 0) - (portfolio?.balance || 0)).toFixed(2)}
+              ${assetsUSD.toFixed(2)}
             </div>
           </div>
         </div>
@@ -155,19 +203,28 @@ const Dashboard = () => {
                   </thead>
                   <tbody>
                     {portfolio.assets.map((asset, index) => {
-                      const priceBTC = asset.symbol.endsWith('USDT') 
-                        ? asset.currentPrice / btcPrice 
-                        : asset.currentPrice;
-                      const avgPriceBTC = asset.symbol.endsWith('USDT') 
-                        ? asset.averagePrice / btcPrice 
-                        : asset.averagePrice;
+                      // FIXED: Correct calculation of asset values in BTC
+                      const isBtcPair = asset.symbol.endsWith('BTC');
                       
+                      // Calculate BTC price correctly for different asset types
+                      const priceBTC = isBtcPair 
+                        ? asset.currentPrice  // Already in BTC
+                        : (asset.currentPrice / btcPrice); // Convert from USDT
+                      
+                      const avgPriceBTC = isBtcPair 
+                        ? asset.averagePrice  // Already in BTC
+                        : (asset.averagePrice / btcPrice); // Convert from USDT
+                      
+                      // Calculate value and cost in BTC
                       const value = asset.quantity * priceBTC;
                       const cost = asset.quantity * avgPriceBTC;
                       const pnl = value - cost;
-                      const pnlPercentage = (pnl / cost) * 100;
+                      const pnlPercentage = cost > 0 ? (pnl / cost) * 100 : 0;
                       
-                      const displaySymbol = asset.symbol.replace('USDT', '');
+                      // Display symbol without the quote asset for readability
+                      const displaySymbol = isBtcPair 
+                        ? asset.symbol.replace('BTC', '') 
+                        : asset.symbol.replace('USDT', '');
                       
                       return (
                         <tr key={index}>
@@ -209,14 +266,21 @@ const Dashboard = () => {
                 </thead>
                 <tbody>
                   {transactions.map((tx, index) => {
-                    const priceBTC = tx.symbol.endsWith('USDT') 
-                      ? tx.price / (btcPrice || 1) 
-                      : tx.price;
-                    const valueBTC = tx.symbol.endsWith('USDT')
-                      ? Math.abs(tx.value) / (btcPrice || 1)
-                      : Math.abs(tx.value);
+                    // FIXED: Correct calculation of transaction values in BTC
+                    const isBtcPair = tx.symbol.endsWith('BTC');
                     
-                    const displaySymbol = tx.symbol.replace('USDT', '');
+                    const priceBTC = isBtcPair
+                      ? tx.price
+                      : (tx.price / (btcPrice || 1));
+                      
+                    const valueBTC = isBtcPair
+                      ? Math.abs(tx.value)
+                      : Math.abs(tx.value) / (btcPrice || 1);
+                    
+                    // Display symbol without the quote asset for readability
+                    const displaySymbol = isBtcPair
+                      ? tx.symbol.replace('BTC', '')
+                      : tx.symbol.replace('USDT', '');
                     
                     return (
                       <tr key={index} className={tx.action === 'BUY' ? 'buy' : 'sell'}>

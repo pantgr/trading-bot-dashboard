@@ -7,6 +7,14 @@ const http = require('http');
 const socketIo = require('socket.io');
 const cors = require('cors');
 
+// Fix for util._extend deprecation warning
+if (require('util')._extend) {
+  const originalExtend = require('util')._extend;
+  require('util')._extend = function(target, source) {
+    return Object.assign(target, source);
+  };
+}
+
 // Initialize NeDB (automatically done when importing the config)
 require('./config/nedb');
 
@@ -186,6 +194,15 @@ app.get('/api/virtual-trade/portfolio', async (req, res) => {
     // Use the virtualTradingService to get the portfolio
     let portfolio = await virtualTradingService.getPortfolio(userId);
     
+    // Ensure portfolio.assets is an array
+    if (!portfolio) {
+      portfolio = { userId, balance: 10000, assets: [], equity: 10000 };
+    }
+    
+    if (!Array.isArray(portfolio.assets)) {
+      portfolio.assets = [];
+    }
+    
     // Get BTC price for calculations
     const btcPrice = await binanceService.getCurrentPrice('BTCUSDT');
     
@@ -204,8 +221,9 @@ app.get('/api/virtual-trade/portfolio', async (req, res) => {
       
       // Calculate total equity in BTC
       const assetsValueBTC = portfolio.assets.reduce((sum, asset) => {
+        const quantity = parseFloat(asset.quantity) || 0;
         const priceBTC = asset.btcPrice || (asset.currentPrice / btcPrice);
-        return sum + (asset.quantity * priceBTC);
+        return sum + (quantity * priceBTC);
       }, 0);
       
       portfolio.btcEquity = portfolio.btcBalance + assetsValueBTC;
@@ -261,6 +279,9 @@ app.post('/api/virtual-trade/execute', async (req, res) => {
       price: parseFloat(price)
     });
     
+    // Broadcast the updated portfolio to all clients
+    io.emit('portfolio_update', result);
+    
     res.json(result);
   } catch (error) {
     console.error('Error executing trade:', error);
@@ -270,6 +291,9 @@ app.post('/api/virtual-trade/execute', async (req, res) => {
 
 // Add the bot settings router
 app.use('/api/bot', botSettingsRouter);
+
+// Add routes
+app.use('/api/config', configRoutes);
 
 // Create HTTP server
 const server = http.createServer(app);
@@ -332,6 +356,16 @@ io.on('connection', (socket) => {
         };
         socket.btcPriceCallback = btcPriceCallback;
         binanceService.subscribeToCandleUpdates('BTCUSDT', '1m', btcPriceCallback);
+      }
+      
+      // Send current portfolio to the client on subscription
+      try {
+        const portfolio = await virtualTradingService.getPortfolio('default');
+        if (portfolio) {
+          socket.emit('portfolio_update', portfolio);
+        }
+      } catch (err) {
+        console.error('Error sending portfolio on subscription:', err);
       }
     } catch (error) {
       console.error(`Error subscribing to market data for ${symbol}:`, error);
@@ -465,7 +499,16 @@ tradingBot.on('trade_signal', async (signal) => {
     
     try {
       // Process the signal using virtualTradingService
-      await virtualTradingService.processSignal(signal);
+      const updatedPortfolio = await virtualTradingService.processSignal(signal);
+      
+      // Broadcast the updated portfolio
+      if (updatedPortfolio) {
+        setTimeout(async () => {
+          // Get the latest portfolio to ensure all data is up to date
+          const latestPortfolio = await virtualTradingService.getPortfolio(signal.userId || 'default');
+          io.emit('portfolio_update', latestPortfolio);
+        }, 1000);
+      }
     } catch (error) {
       console.error('Error processing consensus signal:', error);
     }
@@ -487,10 +530,6 @@ tradingBot.on('settings_updated', (settings) => {
   console.log('Broadcasting bot settings update to all clients');
   io.emit('bot_settings_updated', settings);
 });
-
-// Start server
-// Add routes
-app.use('/api/config', configRoutes);
 
 // Start server
 const PORT = process.env.PORT || 5000;
