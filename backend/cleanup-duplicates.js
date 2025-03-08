@@ -1,15 +1,10 @@
-// cleanup-duplicates.js - Script to remove duplicate transactions from the database
 const path = require('path');
 const Transaction = require('./models/Transaction');
-const { promisify } = require('util');
+const fs = require('fs');
+const Datastore = require('nedb');
 
 // Initialize the database connection
 require('./config/nedb');
-
-// Make sure Transaction has removeAsync method
-if (!Transaction.removeAsync && Transaction.remove) {
-  Transaction.removeAsync = promisify(Transaction.remove.bind(Transaction));
-}
 
 async function cleanupDuplicateTransactions() {
   try {
@@ -54,9 +49,18 @@ async function cleanupDuplicateTransactions() {
     console.log(`Found ${duplicateCount} duplicate transactions`);
     
     if (duplicateCount > 0) {
-      // Remove duplicates
+      // Create a direct connection to the NeDB database
+      const dbPath = path.join(__dirname, 'data', 'transactions.db');
+      const db = new Datastore({ filename: dbPath, autoload: true });
+      
+      // Delete each duplicate transaction
       for (const id of duplicateIds) {
-        await Transaction.removeAsync({ _id: id });
+        await new Promise((resolve, reject) => {
+          db.remove({ _id: id }, {}, (err, numRemoved) => {
+            if (err) reject(err);
+            else resolve(numRemoved);
+          });
+        });
       }
       
       console.log(`Removed ${duplicateCount} duplicate transactions`);
