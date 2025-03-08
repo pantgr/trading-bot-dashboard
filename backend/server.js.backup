@@ -1,8 +1,6 @@
 // server.js - Modified to use NeDB instead of MongoDB
 require('dotenv').config();
 const express = require('express');
-const configRoutes = require('./routes/configRoutes');
-
 const http = require('http');
 const socketIo = require('socket.io');
 const cors = require('cors');
@@ -487,10 +485,6 @@ tradingBot.on('settings_updated', (settings) => {
   console.log('Broadcasting bot settings update to all clients');
   io.emit('bot_settings_updated', settings);
 });
-
-// Start server
-// Add routes
-app.use('/api/config', configRoutes);
 
 // Start server
 const PORT = process.env.PORT || 5000;

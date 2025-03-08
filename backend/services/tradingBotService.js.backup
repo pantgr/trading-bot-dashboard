@@ -242,58 +242,6 @@ executeTrade(signal, userId) {
   try {
     // Import the virtualTradingService if it's not already imported at the top of the file
     const virtualTradingService = require('./virtualTrading');
-const configService = require('./configService');
-
-
-// Load settings from configuration database
-async function loadSettingsFromConfig() {
-  try {
-    const configSettings = await configService.getSettings("default");
-    
-    if (configSettings && Object.keys(configSettings).length > 0) {
-      // We have settings stored in the database
-      console.log("Loading bot settings from configuration database");
-      
-      // Only use stored settings if they have the required fields
-      if (configSettings.signalScores && configSettings.thresholds && 
-          configSettings.indicators && configSettings.moneyManagement) {
-        
-        // Make a backup of current settings
-        const originalSettings = { ...botSettings };
-        
-        // Update bot settings with stored values
-        botSettings = configSettings;
-        
-        console.log("Successfully loaded settings from database");
-        return true;
-      }
-    }
-    
-    // If we reach here, either no settings in DB or they're incomplete
-    // Save the current settings to the database
-    console.log("Saving default bot settings to configuration database");
-    await configService.saveSettings(botSettings, "default");
-    return false;
-  } catch (error) {
-    console.error("Error loading settings from config:", error);
-    return false;
-  }
-}
-
-// Initialize settings from database
-loadSettingsFromConfig()
-  .then(loaded => {
-    if (loaded) {
-      console.log("Bot initialized with settings from database");
-    } else {
-      console.log("Bot initialized with default settings");
-    }
-  })
-  .catch(err => {
-    console.error("Failed to initialize settings:", err);
-  });
-
-
     
     // Process the signal to actually perform the trade
     virtualTradingService.processSignal(signal, userId)
@@ -339,13 +287,5 @@ loadSettingsFromConfig()
 
 // Δημιουργία singleton instance του bot
 const tradingBot = new TradingBot();
-
-
-// Save bot settings to configuration database
-function saveBotSettings() {
-  configService.saveSettings(botSettings, "default")
-    .then(() => console.log("Bot settings saved to configuration database"))
-    .catch(err => console.error("Failed to save bot settings to database:", err));
-}
 
 module.exports = tradingBot;

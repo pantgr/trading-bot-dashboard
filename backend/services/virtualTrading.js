@@ -1,4 +1,4 @@
-// services/virtualTrading.js - Updated to use NeDB
+// services/virtualTrading.js - Updated to use NeDB with improved error handling
 const Portfolio = require('../models/Portfolio');
 const Transaction = require('../models/Transaction');
 const binanceService = require('./binanceService');
@@ -9,6 +9,7 @@ const { promisify } = require('util');
 exports.initializePortfolio = async (userId = 'default') => {
   try {
     // Check if portfolio exists
+    console.log(`Looking for portfolio for user ${userId}`);
     let portfolio = await Portfolio.findOne({ userId });
     
     // If no portfolio exists, create a new one
@@ -23,7 +24,15 @@ exports.initializePortfolio = async (userId = 'default') => {
         updatedAt: Date.now()
       });
       
-      await portfolio.save();
+      try {
+        await portfolio.save();
+        console.log(`Successfully created new portfolio for ${userId}`);
+      } catch (saveErr) {
+        console.error(`Failed to save new portfolio: ${saveErr.message}`);
+        throw saveErr;
+      }
+    } else {
+      console.log(`Found existing portfolio for ${userId}`);
     }
     
     return portfolio;
@@ -36,6 +45,7 @@ exports.initializePortfolio = async (userId = 'default') => {
 // Process trading signal
 exports.processSignal = async (signal, userId = 'default') => {
   try {
+    console.log(`Processing signal for ${userId}: ${JSON.stringify(signal)}`);
     // Get user's portfolio
     const portfolio = await this.initializePortfolio(userId);
     
@@ -50,7 +60,7 @@ exports.processSignal = async (signal, userId = 'default') => {
     // Trading logic based on signals
     if (signal.action === 'BUY') {
       // Determine the quote asset from the symbol
-      const quoteAsset = signal.symbol.slice(-3); // Gets last 3 chars (e.g., BTC from SOLBTC)
+      const quoteAsset = signal.symbol.endsWith('USDT') ? 'USDT' : signal.symbol.slice(-3);
       const price = parseFloat(signal.price || 0);
       
       if (price > 0) {
@@ -80,6 +90,28 @@ exports.processSignal = async (signal, userId = 'default') => {
           signal: signal.indicator
         });
       }
+    } else if (signal.action === 'SELL') {
+      // Check if we have this asset in portfolio
+      const assetIndex = portfolio.assets.findIndex(a => a.symbol === signal.symbol);
+      if (assetIndex >= 0) {
+        const asset = portfolio.assets[assetIndex];
+        const price = parseFloat(signal.price || 0);
+        
+        if (price > 0 && asset.quantity > 0) {
+          console.log(`Executing SELL for ${signal.symbol}: ${asset.quantity} at price ${price}`);
+          
+          return this.executeTrade({
+            userId,
+            symbol: signal.symbol,
+            action: 'SELL',
+            quantity: asset.quantity,
+            price,
+            signal: signal.indicator
+          });
+        }
+      } else {
+        console.log(`Cannot sell ${signal.symbol} - not in portfolio`);
+      }
     }
     
     return null;
@@ -94,11 +126,13 @@ exports.executeTrade = async (tradeParams) => {
   const { userId, symbol, action, quantity, price, signal } = tradeParams;
   
   try {
+    console.log(`Executing ${action} trade for ${userId}: ${quantity} ${symbol} @ ${price}`);
     // Get portfolio
     let portfolio = await Portfolio.findOne({ userId });
     
     if (!portfolio) {
       // Create portfolio if it doesn't exist
+      console.log(`No portfolio found for ${userId}, creating new one`);
       portfolio = await this.initializePortfolio(userId);
     }
     
@@ -196,9 +230,17 @@ exports.executeTrade = async (tradeParams) => {
     portfolio.updatedAt = Date.now();
     
     // Save changes to portfolio
-    await portfolio.save();
+    console.log(`Saving updated portfolio for ${userId}`);
+    try {
+      await portfolio.save();
+      console.log(`Portfolio successfully updated for ${userId}`);
+    } catch (saveErr) {
+      console.error(`Failed to save portfolio: ${saveErr.message}`);
+      throw saveErr;
+    }
     
     // Record transaction
+    console.log(`Recording transaction for ${action} ${quantity} ${symbol}`);
     const transaction = new Transaction({
       userId,
       symbol,
@@ -217,7 +259,13 @@ exports.executeTrade = async (tradeParams) => {
       signal
     });
     
-    await transaction.save();
+    try {
+      await transaction.save();
+      console.log(`Transaction successfully recorded for ${action} ${quantity} ${symbol}`);
+    } catch (saveErr) {
+      console.error(`Failed to save transaction: ${saveErr.message}`);
+      // Continue execution even if transaction save fails
+    }
     
     return portfolio;
   } catch (error) {
@@ -243,16 +291,20 @@ exports.manualTrade = async (tradeParams) => {
 // Get portfolio
 exports.getPortfolio = async (userId = 'default') => {
   try {
+    console.log(`Getting portfolio for user ${userId}`);
     // Get portfolio or create if it doesn't exist
     let portfolio = await Portfolio.findOne({ userId });
     
     if (!portfolio) {
+      console.log(`No portfolio found for ${userId}, initializing`);
       portfolio = await this.initializePortfolio(userId);
+    } else {
+      console.log(`Found portfolio for ${userId} with ${portfolio.assets?.length || 0} assets`);
     }
     
     return portfolio;
   } catch (error) {
-    console.error('Error fetching portfolio:', error);
+    console.error(`Error fetching portfolio for ${userId}:`, error);
     throw error;
   }
 };
@@ -260,11 +312,13 @@ exports.getPortfolio = async (userId = 'default') => {
 // Get transaction history
 exports.getTransactionHistory = async (userId = 'default') => {
   try {
+    console.log(`Getting transaction history for user ${userId}`);
     // Find transactions and sort by timestamp (most recent first)
     const transactions = await Transaction.find({ userId });
+    console.log(`Found ${transactions.length} transactions for ${userId}`);
     return transactions.sort((a, b) => b.timestamp - a.timestamp).slice(0, 100);
   } catch (error) {
-    console.error('Error fetching transaction history:', error);
+    console.error(`Error fetching transaction history for ${userId}:`, error);
     throw error;
   }
 };

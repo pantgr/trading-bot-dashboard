@@ -1,38 +1,74 @@
-// backend/models/Transaction.js
-const db = require('../config/nedb');
+// models/Transaction.js - With improved database configuration
+const path = require('path');
+const Datastore = require('nedb');
 const { promisify } = require('util');
+const dbConfig = require('../config/nedb');
 
-// Convert NeDB callbacks to promises
-const insert = promisify(db.transactions.insert.bind(db.transactions));
-const find = promisify(db.transactions.find.bind(db.transactions));
+// Create the database with safer configuration
+const dbPath = path.join(dbConfig.dataDir, 'transactions.db');
+const db = new Datastore({ 
+  filename: dbPath, 
+  ...dbConfig.options
+});
+
+// Ensure the file is created and accessible
+try {
+  if (!require('fs').existsSync(dbPath)) {
+    require('fs').writeFileSync(dbPath, '', { flag: 'wx' });
+    console.log(`Created new transactions database file at ${dbPath}`);
+  }
+} catch (error) {
+  console.warn(`Warning creating transactions.db: ${error.message}`);
+}
+
+// Promisify the database methods
+db.findOneAsync = promisify(db.findOne.bind(db));
+db.findAsync = promisify(db.find.bind(db));
+db.insertAsync = promisify(db.insert.bind(db));
+db.updateAsync = promisify(db.update.bind(db));
+db.removeAsync = promisify(db.remove.bind(db));
 
 class Transaction {
   constructor(data) {
-    this.userId = data.userId;
-    this.symbol = data.symbol;
-    this.action = data.action;
-    this.quantity = data.quantity;
-    this.price = data.price;
-    this.value = data.value;
-    this.valueUSD = data.valueUSD;
-    this.valueBTC = data.valueBTC;
-    this.btcPrice = data.btcPrice;
-    this.timestamp = data.timestamp || Date.now();
-    this.signal = data.signal || 'MANUAL';
-    this._id = data._id;
+    Object.assign(this, data);
   }
-
-  // Save the transaction
+  
   async save() {
-    const newTransaction = await insert(this);
-    this._id = newTransaction._id;
-    return this;
+    try {
+      if (this._id) {
+        // Update existing record
+        const result = await db.updateAsync({ _id: this._id }, this, {});
+        return result;
+      } else {
+        // Insert new record
+        const result = await db.insertAsync(this);
+        this._id = result._id;
+        return result;
+      }
+    } catch (error) {
+      console.error('Error saving transaction:', error);
+      throw error;
+    }
   }
-
-  // Find transactions
-  static async find(query) {
-    const transactions = await find(query);
-    return transactions.map(tx => new Transaction(tx));
+  
+  static async findOne(query) {
+    try {
+      const result = await db.findOneAsync(query);
+      return result ? new Transaction(result) : null;
+    } catch (error) {
+      console.error('Error finding transaction:', error);
+      throw error;
+    }
+  }
+  
+  static async find(query = {}) {
+    try {
+      const results = await db.findAsync(query);
+      return results.map(result => new Transaction(result));
+    } catch (error) {
+      console.error('Error finding transactions:', error);
+      throw error;
+    }
   }
 }
 
