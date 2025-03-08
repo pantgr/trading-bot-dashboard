@@ -1,22 +1,47 @@
-
+// src/components/TradingBotPanel.js - Updated with ApexCharts and price loading fix
 import React, { useState, useEffect } from 'react';
 import { connectSocket, startBot, stopBot } from '../services/socketService';
+import CandlestickChartApex from './CandlestickChartApex';
+import axios from 'axios';
 
 const TradingBotPanel = () => {
-  const [symbol, setSymbol] = useState('ETHBTC'); // Αλλαγή από BTCUSDT σε ETHBTC
+  const [symbol, setSymbol] = useState('ETHBTC');
   const [interval, setInterval] = useState('5m');
   const [isRunning, setIsRunning] = useState(false);
   const [signals, setSignals] = useState([]);
   const [lastPrice, setLastPrice] = useState(null);
   const [indicators, setIndicators] = useState(null);
+  const [isLoading, setIsLoading] = useState(true);
 
+  // Fetch current price when symbol changes
   useEffect(() => {
+    setIsLoading(true);
+    
+    const fetchInitialPrice = async () => {
+      try {
+        // Get current price directly from API when component mounts or symbol changes
+        const response = await axios.get(`/api/market-data/price/${symbol}`);
+        if (response.data && response.data.price) {
+          setLastPrice(response.data.price);
+          console.log(`Initial price fetched for ${symbol}: ${response.data.price}`);
+        }
+        setIsLoading(false);
+      } catch (error) {
+        console.error('Error fetching initial price:', error);
+        setIsLoading(false);
+      }
+    };
+
+    fetchInitialPrice();
+    
     const socket = connectSocket();
     
-    // Ακρόαση για ενημερώσεις τιμών
+    // Listen for price updates with improved logging
     socket.on('price_update', (data) => {
       if (data.symbol === symbol) {
+        console.log(`Received price update for ${symbol}: ${data.price}`);
         setLastPrice(data.price);
+        setIsLoading(false);
       }
     });
     
@@ -47,6 +72,9 @@ const TradingBotPanel = () => {
       }
     });
     
+    // Reset signals when symbol changes
+    setSignals([]);
+    
     return () => {
       socket.off('price_update');
       socket.off('indicators_update');
@@ -69,6 +97,22 @@ const TradingBotPanel = () => {
     return price ? `₿${parseFloat(price).toFixed(8)}` : 'Loading...';
   };
 
+  const handleSymbolChange = (e) => {
+    // Stop bot if running
+    if (isRunning) {
+      stopBot(symbol, interval);
+    }
+    setSymbol(e.target.value);
+  };
+
+  const handleIntervalChange = (e) => {
+    // Stop bot if running
+    if (isRunning) {
+      stopBot(symbol, interval);
+    }
+    setInterval(e.target.value);
+  };
+
   return (
     <div className="trading-bot-panel">
       <div className="bot-controls">
@@ -78,7 +122,7 @@ const TradingBotPanel = () => {
             <label>Symbol:</label>
             <select 
               value={symbol} 
-              onChange={(e) => setSymbol(e.target.value)}
+              onChange={handleSymbolChange}
               disabled={isRunning}
             >
               <option value="ETHBTC">Ethereum (ETH/BTC)</option>
@@ -95,7 +139,7 @@ const TradingBotPanel = () => {
             <label>Interval:</label>
             <select 
               value={interval} 
-              onChange={(e) => setInterval(e.target.value)}
+              onChange={handleIntervalChange}
               disabled={isRunning}
             >
               <option value="1m">1 minute</option>
@@ -117,7 +161,7 @@ const TradingBotPanel = () => {
           <div className="form-group">
             <label>Current Price:</label>
             <div className="price-display">
-              {formatBTCPrice(lastPrice)}
+              {isLoading ? 'Loading...' : formatBTCPrice(lastPrice)}
             </div>
           </div>
         </div>
@@ -139,6 +183,11 @@ const TradingBotPanel = () => {
             </button>
           )}
         </div>
+      </div>
+      
+      {/* Candlestick Chart */}
+      <div className="chart-section">
+        <CandlestickChartApex symbol={symbol} interval={interval} />
       </div>
       
       {indicators && (

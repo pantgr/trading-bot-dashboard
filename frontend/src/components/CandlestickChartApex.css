@@ -1,0 +1,72 @@
+/* src/components/CandlestickChartApex.css */
+.candlestick-chart-container {
+  background-color: #1e293b;
+  border-radius: 8px;
+  padding: 15px;
+  margin-bottom: 20px;
+  box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+}
+
+.chart-wrapper {
+  margin-bottom: 15px;
+}
+
+.volume-chart-wrapper {
+  margin-bottom: 15px;
+}
+
+.chart-legend {
+  display: flex;
+  justify-content: center;
+  gap: 20px;
+  padding: 10px;
+  border-top: 1px solid #334155;
+}
+
+.legend-item {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  color: #e2e8f0;
+  font-size: 14px;
+}
+
+.legend-marker {
+  font-size: 16px;
+}
+
+.legend-marker.buy-marker {
+  color: #4CAF50;
+}
+
+.legend-marker.sell-marker {
+  color: #FF5252;
+}
+
+/* Make tooltip text more readable */
+.apexcharts-tooltip {
+  background: #1c2738 !important;
+  border: 1px solid #3b82f6 !important;
+  box-shadow: 0 2px 5px rgba(0, 0, 0, 0.5) !important;
+}
+
+.apexcharts-tooltip-title {
+  background: #2d3748 !important;
+  border-bottom: 1px solid #4a5568 !important;
+}
+
+/* Override ApexCharts typography */
+.apexcharts-text,
+.apexcharts-title-text,
+.apexcharts-xaxis-label,
+.apexcharts-yaxis-label {
+  font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif !important;
+}
+
+/* Loading state */
+.apexcharts-canvas .apexcharts-nodata {
+  align-items: center;
+  justify-content: center;
+  display: flex;
+  height: 100%;
+}
