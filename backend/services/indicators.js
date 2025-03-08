@@ -1,7 +1,9 @@
-const { RSI, EMA, SMA } = require('technicalindicators');
+// services/indicatorsService.js - Complete fixed version
+const { RSI, EMA, SMA, BollingerBands } = require('technicalindicators');
+const binanceService = require('./binanceService');
 
-// Υπολογισμός επιπέδων Fibonacci
-function calculateFibonacciLevels(high, low) {
+// Calculate Fibonacci levels
+const calculateFibonacciLevels = (high, low) => {
   const diff = high - low;
   return {
     level0: high,
@@ -9,156 +11,284 @@ function calculateFibonacciLevels(high, low) {
     level38_2: high - 0.382 * diff,
     level50_0: high - 0.5 * diff,
     level61_8: high - 0.618 * diff,
+    level78_6: high - 0.786 * diff,
     level100: low
   };
-}
+};
 
-// Υπολογισμός τεχνικών δεικτών
-exports.calculate = (data) => {
-  if (!data || data.length < 30) {
-    console.error('Not enough data for indicators calculation');
+// Calculate technical indicators for a symbol
+const calculateIndicators = (candles) => {
+  if (!candles || candles.length < 30) {
+    console.warn('Not enough candles to calculate indicators');
     return null;
   }
 
-  // Εξαγωγή τιμών κλεισίματος
-  const prices = data.map(candle => candle.close);
+  // Extract closing prices from candles
+  const closes = candles.map(candle => candle.close);
   
-  // Υπολογισμός RSI (14 περίοδοι)
+  // Calculate RSI (14 periods)
   const rsiValues = RSI.calculate({
-    values: prices,
+    values: closes,
     period: 14
   });
   
-  // Υπολογισμός EMAs
+  // Calculate EMA (9 and 21 periods)
   const ema9Values = EMA.calculate({
-    values: prices,
+    values: closes,
     period: 9
   });
   
   const ema21Values = EMA.calculate({
-    values: prices,
+    values: closes,
     period: 21
   });
   
-  // Εύρεση υψηλού και χαμηλού για τα επίπεδα Fibonacci
-  const high = Math.max(...prices.slice(-100));
-  const low = Math.min(...prices.slice(-100));
-  const fibLevels = calculateFibonacciLevels(high, low);
+  // Calculate SMA (50 and 200 periods)
+  const sma50Values = SMA.calculate({
+    values: closes,
+    period: 50
+  });
   
-  return {
+  const sma200Values = SMA.calculate({
+    values: closes,
+    period: 200
+  });
+  
+  // Calculate Bollinger Bands (20 periods, 2 standard deviations)
+  const bollingerBands = BollingerBands.calculate({
+    values: closes,
+    period: 20,
+    stdDev: 2
+  });
+  
+  // Find high and low for Fibonacci levels
+  const recentCandles = candles.slice(-100); // Use last 100 candles
+  const highs = recentCandles.map(candle => candle.high);
+  const lows = recentCandles.map(candle => candle.low);
+  const high = Math.max(...highs);
+  const low = Math.min(...lows);
+  
+  // Calculate Fibonacci levels
+  const fibonacciLevels = calculateFibonacciLevels(high, low);
+  
+  // Get the most recent values
+  const currentValues = {
     rsi: rsiValues[rsiValues.length - 1],
     ema9: ema9Values[ema9Values.length - 1],
     ema21: ema21Values[ema21Values.length - 1],
-    fibonacci: fibLevels,
-    lastPrice: prices[prices.length - 1]
+    sma50: sma50Values[sma50Values.length - 1],
+    sma200: sma200Values[sma200Values.length - 1],
+    bollinger: bollingerBands[bollingerBands.length - 1],
+    fibonacci: fibonacciLevels,
+    lastPrice: closes[closes.length - 1],
+    lastCandle: candles[candles.length - 1]
+  };
+  
+  // Return current values and historical indicators for charts
+  return {
+    current: currentValues,
+    historical: {
+      rsi: rsiValues,
+      ema9: ema9Values,
+      ema21: ema21Values,
+      sma50: sma50Values,
+      sma200: sma200Values,
+      bollinger: bollingerBands
+    }
   };
 };
 
-// Έλεγχος για trading signals
-exports.checkSignals = (symbol, data, indicators) => {
-  if (!indicators) return [];
+// Check for trading signals based on indicators
+const checkTradingSignals = (symbol, candles, indicators) => {
+  if (!indicators || !indicators.current) {
+    console.log(`No indicators available for ${symbol}`);
+    return [];
+  }
 
   const signals = [];
-  const currentPrice = data[data.length - 1].close;
-  const time = data[data.length - 1].time;
+  const currentCandle = candles[candles.length - 1];
+  const currentPrice = currentCandle.close;
   
-  // RSI strategy
-  if (indicators.rsi < 30) {
-    signals.push({
-      time,
-      symbol,
-      indicator: 'RSI',
-      value: indicators.rsi,
-      price: currentPrice,
-      action: 'BUY',
-      reason: 'RSI oversold (< 30)'
-    });
-  } else if (indicators.rsi > 70) {
-    signals.push({
-      time,
-      symbol,
-      indicator: 'RSI',
-      value: indicators.rsi,
-      price: currentPrice,
-      action: 'SELL',
-      reason: 'RSI overbought (> 70)'
-    });
-  }
-  
-  // EMA crossover strategy
-  if (data.length > 1) {
-    const previousData = data[data.length - 2];
-    const previousPrices = data.slice(0, -1).map(candle => candle.close);
-    
-    const previousEma9Values = EMA.calculate({
-      values: previousPrices,
-      period: 9
-    });
-    
-    const previousEma21Values = EMA.calculate({
-      values: previousPrices,
-      period: 21
-    });
-    
-    const previousEma9 = previousEma9Values[previousEma9Values.length - 1];
-    const previousEma21 = previousEma21Values[previousEma21Values.length - 1];
-    
-    // Έλεγχος για EMA crossover
-    if (previousEma9 <= previousEma21 && indicators.ema9 > indicators.ema21) {
+  // 1. RSI Strategy
+  if (indicators.current.rsi !== undefined) {
+    // Buy signal: RSI < 30 (oversold)
+    if (indicators.current.rsi < 30) {
       signals.push({
-        time,
         symbol,
-        indicator: 'EMA_CROSSOVER',
-        value: `${indicators.ema9.toFixed(2)}/${indicators.ema21.toFixed(2)}`,
-        price: currentPrice,
+        time: currentCandle.time,
+        indicator: 'RSI',
         action: 'BUY',
-        reason: 'EMA 9 crossed above EMA 21'
-      });
-    } else if (previousEma9 >= previousEma21 && indicators.ema9 < indicators.ema21) {
-      signals.push({
-        time,
-        symbol,
-        indicator: 'EMA_CROSSOVER',
-        value: `${indicators.ema9.toFixed(2)}/${indicators.ema21.toFixed(2)}`,
         price: currentPrice,
-        action: 'SELL',
-        reason: 'EMA 9 crossed below EMA 21'
+        value: indicators.current.rsi.toFixed(2),
+        reason: `RSI is oversold (${indicators.current.rsi.toFixed(2)} < 30)`
       });
+      console.log(`RSI BUY signal for ${symbol}: ${indicators.current.rsi.toFixed(2)}`);
+    } 
+    // Sell signal: RSI > 70 (overbought)
+    else if (indicators.current.rsi > 70) {
+      signals.push({
+        symbol,
+        time: currentCandle.time,
+        indicator: 'RSI',
+        action: 'SELL',
+        price: currentPrice,
+        value: indicators.current.rsi.toFixed(2),
+        reason: `RSI is overbought (${indicators.current.rsi.toFixed(2)} > 70)`
+      });
+      console.log(`RSI SELL signal for ${symbol}: ${indicators.current.rsi.toFixed(2)}`);
     }
   }
   
-  // Fibonacci retracement strategy
-  const fibLevels = indicators.fibonacci;
+  // 2. EMA Crossover Strategy
+  if (candles.length >= 2 && indicators.historical) {
+    // Use historical values for EMA crossover check
+    const ema9History = indicators.historical.ema9;
+    const ema21History = indicators.historical.ema21;
+    
+    if (ema9History && ema21History && ema9History.length > 1 && ema21History.length > 1) {
+      const previousEma9 = ema9History[ema9History.length - 2];
+      const previousEma21 = ema21History[ema21History.length - 2];
+      const currentEma9 = indicators.current.ema9;
+      const currentEma21 = indicators.current.ema21;
+      
+      // Golden cross: EMA9 crosses above EMA21
+      if (previousEma9 <= previousEma21 && currentEma9 > currentEma21) {
+        signals.push({
+          symbol,
+          time: currentCandle.time,
+          indicator: 'EMA_CROSSOVER',
+          action: 'BUY',
+          price: currentPrice,
+          value: `${currentEma9.toFixed(8)}/${currentEma21.toFixed(8)}`,
+          reason: `EMA9 crossed above EMA21 (${currentEma9.toFixed(8)} > ${currentEma21.toFixed(8)})`
+        });
+        console.log(`EMA CROSSOVER BUY signal for ${symbol}`);
+      }
+      // Death cross: EMA9 crosses below EMA21
+      else if (previousEma9 >= previousEma21 && currentEma9 < currentEma21) {
+        signals.push({
+          symbol,
+          time: currentCandle.time,
+          indicator: 'EMA_CROSSOVER',
+          action: 'SELL',
+          price: currentPrice,
+          value: `${currentEma9.toFixed(8)}/${currentEma21.toFixed(8)}`,
+          reason: `EMA9 crossed below EMA21 (${currentEma9.toFixed(8)} < ${currentEma21.toFixed(8)})`
+        });
+        console.log(`EMA CROSSOVER SELL signal for ${symbol}`);
+      }
+    }
+  }
   
-  if (data.length > 1) {
-    const previousClose = data[data.length - 2].close;
+  // 3. Bollinger Bands Strategy
+  if (indicators.current.bollinger) {
+    const { upper, lower } = indicators.current.bollinger;
     
-    // Buy signal όταν η τιμή πλησιάζει το 61.8% retracement level από κάτω
-    if (previousClose < fibLevels.level61_8 && currentPrice >= fibLevels.level61_8) {
+    // Buy: Price reaches the lower band
+    if (currentPrice <= lower) {
       signals.push({
-        time,
         symbol,
-        indicator: 'FIBONACCI',
-        value: fibLevels.level61_8.toFixed(2),
-        price: currentPrice,
+        time: currentCandle.time,
+        indicator: 'BOLLINGER',
         action: 'BUY',
-        reason: 'Price reached 61.8% Fibonacci retracement level'
+        price: currentPrice,
+        value: `${lower.toFixed(8)}/${upper.toFixed(8)}`,
+        reason: `Price reached lower Bollinger Band (${lower.toFixed(8)})`
       });
+      console.log(`BOLLINGER BUY signal for ${symbol}`);
+    } 
+    // Sell: Price reaches the upper band
+    else if (currentPrice >= upper) {
+      signals.push({
+        symbol,
+        time: currentCandle.time,
+        indicator: 'BOLLINGER',
+        action: 'SELL',
+        price: currentPrice,
+        value: `${lower.toFixed(8)}/${upper.toFixed(8)}`,
+        reason: `Price reached upper Bollinger Band (${upper.toFixed(8)})`
+      });
+      console.log(`BOLLINGER SELL signal for ${symbol}`);
+    }
+  }
+  
+  // 4. Fibonacci Retracement Strategy
+  if (candles.length >= 2 && indicators.current.fibonacci) {
+    const previousClose = candles[candles.length - 2].close;
+    const fib = indicators.current.fibonacci;
+    
+    // Buy when price bounces from 61.8% level
+    if (previousClose < fib.level61_8 && currentPrice >= fib.level61_8) {
+      signals.push({
+        symbol,
+        time: currentCandle.time,
+        indicator: 'FIBONACCI',
+        action: 'BUY',
+        price: currentPrice,
+        value: fib.level61_8.toFixed(8),
+        reason: `Price bounced up from 61.8% Fibonacci level (${fib.level61_8.toFixed(8)})`
+      });
+      console.log(`FIBONACCI BUY signal for ${symbol}`);
     }
     
-    // Sell signal όταν η τιμή πέφτει κάτω από το 38.2% retracement level
-    if (previousClose > fibLevels.level38_2 && currentPrice <= fibLevels.level38_2) {
+    // Sell when price breaks below 38.2% level
+    if (previousClose > fib.level38_2 && currentPrice <= fib.level38_2) {
       signals.push({
-        time,
         symbol,
+        time: currentCandle.time,
         indicator: 'FIBONACCI',
-        value: fibLevels.level38_2.toFixed(2),
-        price: currentPrice,
         action: 'SELL',
-        reason: 'Price broke below 38.2% Fibonacci retracement level'
+        price: currentPrice,
+        value: fib.level38_2.toFixed(8),
+        reason: `Price broke below 38.2% Fibonacci level (${fib.level38_2.toFixed(8)})`
       });
+      console.log(`FIBONACCI SELL signal for ${symbol}`);
     }
+  }
+  
+  // Log signal count
+  if (signals.length > 0) {
+    console.log(`Generated ${signals.length} signals for ${symbol}`);
   }
   
   return signals;
+};
+
+// Initialize indicators for a symbol
+const initializeIndicators = async (symbol, interval = '1h') => {
+  try {
+    // Get historical data
+    const candles = await binanceService.getHistoricalCandles(symbol, interval, 200);
+    
+    // Calculate indicators
+    const indicators = calculateIndicators(candles);
+    
+    // Check for trading signals
+    const signals = checkTradingSignals(symbol, candles, indicators);
+    
+    console.log(`Initialized indicators for ${symbol} (${interval}), found ${signals.length} signals`);
+    
+    // If there are signals, log them
+    if (signals.length > 0) {
+      console.log('Initial signals:', 
+        signals.map(s => `${s.indicator} ${s.action} at ${new Date(s.time).toISOString()}`).join(', ')
+      );
+    }
+    
+    return {
+      symbol,
+      interval,
+      indicators,
+      signals
+    };
+  } catch (error) {
+    console.error(`Error initializing indicators for ${symbol}:`, error.message);
+    throw error;
+  }
+};
+
+module.exports = {
+  calculateIndicators,
+  checkTradingSignals,
+  initializeIndicators
 };

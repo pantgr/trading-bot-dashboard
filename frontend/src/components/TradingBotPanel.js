@@ -1,4 +1,5 @@
-// src/components/TradingBotPanel.js
+// src/components/TradingBotPanel.js - With signal persistence
+
 import React, { useState, useEffect } from 'react';
 import { connectSocket, startBot, stopBot } from '../services/socketService';
 import CandlestickChartApex from './CandlestickChartApex';
@@ -17,13 +18,24 @@ const TradingBotPanel = () => {
     }
   };
 
+  // Get saved signals from localStorage
+  const getSavedSignals = (symbolKey) => {
+    try {
+      const savedSignals = localStorage.getItem(`signals_${symbolKey}`);
+      return savedSignals ? JSON.parse(savedSignals) : [];
+    } catch (e) {
+      console.error("Error loading saved signals:", e);
+      return [];
+    }
+  };
+
   const savedState = getSavedState();
   
   // Initialize state with saved values or defaults
   const [symbol, setSymbol] = useState(savedState?.symbol || 'ETHBTC');
   const [interval, setInterval] = useState(savedState?.interval || '1m');
   const [isRunning, setIsRunning] = useState(false); // Always initialize as false and check with server
-  const [signals, setSignals] = useState([]);
+  const [signals, setSignals] = useState(() => getSavedSignals(`${savedState?.symbol || 'ETHBTC'}_${savedState?.interval || '1m'}`));
   const [lastPrice, setLastPrice] = useState(null);
   const [indicators, setIndicators] = useState(null);
   const [isLoading, setIsLoading] = useState(true);
@@ -45,6 +57,11 @@ const TradingBotPanel = () => {
     
     localStorage.setItem('tradingBotState', JSON.stringify(stateToSave));
   }, [symbol, interval, selectedQuoteAsset]);
+
+  // Save signals to localStorage whenever they change
+  useEffect(() => {
+    localStorage.setItem(`signals_${symbol}_${interval}`, JSON.stringify(signals));
+  }, [signals, symbol, interval]);
 
   // Connect to socket once when component mounts
   useEffect(() => {
@@ -68,10 +85,19 @@ const TradingBotPanel = () => {
     
     checkBotStatus();
     
+    // Return cleanup function that uses socket
     return () => {
-      // No need to disconnect socket here as it's shared across the app
+      if (isRunning) {
+        socket.emit('stop_bot', { symbol, interval });
+      }
     };
-  }, []);
+  }, [symbol, interval, isRunning]);
+
+  // When symbol or interval changes, load signals from localStorage
+  useEffect(() => {
+    const savedSignals = getSavedSignals(`${symbol}_${interval}`);
+    setSignals(savedSignals);
+  }, [symbol, interval]);
 
   // Fetch available trading pairs from Binance
   useEffect(() => {
@@ -115,10 +141,115 @@ const TradingBotPanel = () => {
     fetchTradingPairs();
   }, []);
 
+  // Fetch historical signal data from backend
+  useEffect(() => {
+    const fetchHistoricalSignals = async () => {
+      try {
+        // This endpoint might need to be implemented in your backend
+        const response = await axios.get('/api/bot/signals', {
+          params: { 
+            symbol, 
+            interval,
+            limit: 100  // Get the last 100 signals
+          }
+        });
+        
+        if (response.data && Array.isArray(response.data)) {
+          console.log(`Fetched ${response.data.length} historical signals`);
+          if (response.data.length > 0) {
+            setSignals(prevSignals => {
+              // Combine with existing signals, remove duplicates
+              const allSignals = [...response.data, ...prevSignals];
+              const uniqueSignals = [];
+              const seen = new Set();
+              
+              for (const signal of allSignals) {
+                const key = `${signal.time}_${signal.indicator}_${signal.action}`;
+                if (!seen.has(key)) {
+                  seen.add(key);
+                  uniqueSignals.push(signal);
+                }
+              }
+              
+              // Sort by time (newest first)
+              uniqueSignals.sort((a, b) => b.time - a.time);
+              
+              // Save to localStorage
+              localStorage.setItem(`signals_${symbol}_${interval}`, JSON.stringify(uniqueSignals));
+              
+              return uniqueSignals;
+            });
+          }
+        }
+      } catch (error) {
+        // If endpoint doesn't exist, this will fail silently
+        console.log('Note: Historical signals endpoint not available');
+      }
+    };
+    
+    fetchHistoricalSignals();
+  }, [symbol, interval]);
+
+  // Fetch initial indicators and signals data when symbol or interval changes
+  useEffect(() => {
+    const fetchInitialData = async () => {
+      try {
+        setIsLoading(true);
+        // Call API to get indicators data
+        const response = await axios.get(`/api/indicators/${symbol}`, {
+          params: { interval }
+        });
+        
+        if (response.data && response.data.indicators) {
+          console.log("Received initial indicators data:", response.data.indicators);
+          setIndicators(response.data.indicators.current || null);
+          
+          // If there are any signals, add them to the signals state
+          if (response.data.signals && response.data.signals.length > 0) {
+            console.log(`Found ${response.data.signals.length} initial signals`);
+            setSignals(prevSignals => {
+              // Add new signals, avoiding duplicates
+              const newSignals = [...prevSignals];
+              let signalsAdded = 0;
+              
+              for (const signal of response.data.signals) {
+                const isDuplicate = newSignals.some(
+                  s => s.time === signal.time && 
+                      s.indicator === signal.indicator && 
+                      s.action === signal.action
+                );
+                
+                if (!isDuplicate) {
+                  newSignals.unshift(signal); // Add to beginning
+                  signalsAdded++;
+                }
+              }
+              
+              console.log(`Added ${signalsAdded} new signals`);
+              
+              // Sort by time (newest first)
+              newSignals.sort((a, b) => b.time - a.time);
+              
+              // Save to localStorage
+              localStorage.setItem(`signals_${symbol}_${interval}`, JSON.stringify(newSignals));
+              
+              return newSignals;
+            });
+          }
+        }
+        setIsLoading(false);
+      } catch (error) {
+        console.error('Error fetching initial data:', error);
+        setIsLoading(false);
+      }
+    };
+    
+    // Fetch initial data if the symbol or interval changes
+    fetchInitialData();
+  }, [symbol, interval]);
+
   // Setup data and event listeners when symbol changes
   useEffect(() => {
-    setIsLoading(true);
-    
     const socket = connectSocket();
     
     // Fetch initial price
@@ -128,10 +259,8 @@ const TradingBotPanel = () => {
         if (response.data && response.data.price) {
           setLastPrice(response.data.price);
         }
-        setIsLoading(false);
       } catch (error) {
         console.error('Error fetching initial price:', error);
-        setIsLoading(false);
       }
     };
 
@@ -145,35 +274,51 @@ const TradingBotPanel = () => {
     };
     
     const handleIndicatorsUpdate = (data) => {
-      if (data.symbol === symbol) {
-        setIndicators(data.indicators?.current || null);
+      if (data && data.symbol === symbol) {
+        if (data.indicators && data.indicators.current) {
+          setIndicators(data.indicators.current);
+          console.log("Received indicators update:", data.indicators.current);
+        } else {
+          // Log unexpected data structure
+          console.warn('Received indicators update with unexpected structure:', data);
+        }
       }
     };
     
     const handleBotStarted = (data) => {
       if (data.symbol === symbol && data.interval === interval) {
         setIsRunning(true);
+        console.log('Bot started for', symbol, interval);
       }
     };
     
     const handleBotStopped = (data) => {
       if (data.symbol === symbol && data.interval === interval) {
         setIsRunning(false);
+        console.log('Bot stopped for', symbol, interval);
       }
     };
     
     const handleTradeSignal = (signal) => {
       if (signal.symbol === symbol) {
+        console.log('Received trade signal:', signal.indicator, signal.action, 
+                   new Date(signal.time).toLocaleTimeString());
+        
         setSignals(prev => {
           // Check if we already have this signal
           const isDuplicate = prev.some(
             s => s.time === signal.time && 
-                 s.indicator === signal.indicator && 
-                 s.action === signal.action
+                s.indicator === signal.indicator && 
+                s.action === signal.action
           );
           
           if (!isDuplicate) {
-            const newSignals = [signal, ...prev].slice(0, 20);
+            // Add the new signal at the beginning of the array
+            const newSignals = [signal, ...prev].slice(0, 100); // Keep up to 100 signals
+            
+            // Save to localStorage
+            localStorage.setItem(`signals_${symbol}_${interval}`, JSON.stringify(newSignals));
+            
             return newSignals;
           }
           
@@ -189,8 +334,8 @@ const TradingBotPanel = () => {
     socket.on('bot_stopped', handleBotStopped);
     socket.on('trade_signal', handleTradeSignal);
     
-    // Reset signals when changing symbols but preserve other state
-    setSignals([]);
+    // Mark that we're subscribed to this symbol
+    socket.emit('subscribe_market', { symbol, interval });
     
     return () => {
       socket.off('price_update', handlePriceUpdate);
@@ -198,17 +343,59 @@ const TradingBotPanel = () => {
       socket.off('bot_started', handleBotStarted);
       socket.off('bot_stopped', handleBotStopped);
       socket.off('trade_signal', handleTradeSignal);
+      
+      // Unsubscribe when component unmounts or symbol changes
+      socket.emit('unsubscribe_market', { symbol, interval });
     };
   }, [symbol, interval]);
 
   const handleStartBot = async () => {
-    startBot(symbol, interval);
-    // We don't set isRunning here - we wait for the 'bot_started' event
+    try {
+      // Call the backend API directly
+      await axios.post('/api/bot/start', {
+        symbol,
+        interval
+      });
+      
+      // Also use the socket method
+      startBot(symbol, interval);
+      
+      // Check for indicators after starting the bot
+      setTimeout(async () => {
+        try {
+          const response = await axios.get(`/api/indicators/${symbol}`, {
+            params: { interval }
+          });
+          
+          if (response.data && response.data.indicators) {
+            setIndicators(response.data.indicators.current || null);
+          }
+        } catch (error) {
+          console.error('Error fetching indicators after bot start:', error);
+        }
+      }, 2000);
+      
+      // We don't set isRunning here - we wait for the 'bot_started' event
+    } catch (error) {
+      console.error('Error starting bot:', error);
+    }
   };
 
   const handleStopBot = async () => {
-    stopBot(symbol, interval);
-    // We don't set isRunning here - we wait for the 'bot_stopped' event
+    try {
+      // Call the backend API directly
+      await axios.post('/api/bot/stop', {
+        symbol,
+        interval
+      });
+      
+      // Also use the socket method
+      stopBot(symbol, interval);
+      
+      // We don't set isRunning here - we wait for the 'bot_stopped' event
+    } catch (error) {
+      console.error('Error stopping bot:', error);
+    }
   };
 
   // Format price based on quote asset
@@ -282,6 +469,13 @@ const TradingBotPanel = () => {
       return groupedSymbols[selectedQuoteAsset] ? 
         [[selectedQuoteAsset, groupedSymbols[selectedQuoteAsset]]] : [];
     }
+  };
+
+  // Clear signals button handler
+  const handleClearSignals = () => {
+    // Clear signals for this symbol/interval
+    setSignals([]);
+    localStorage.removeItem(`signals_${symbol}_${interval}`);
   };
 
   // Style for all controls - making them exactly the same height
@@ -544,6 +738,28 @@ const TradingBotPanel = () => {
               </div>
             )}
             
+            {indicators.bollinger && indicators.bollinger.upper !== undefined && (
+              <div className="indicator">
+                <div className="indicator-label">Bollinger Upper</div>
+                <div className="indicator-value">
+                  {typeof indicators.bollinger.upper === 'number' 
+                    ? indicators.bollinger.upper.toFixed(8) 
+                    : 'N/A'}
+                </div>
+              </div>
+            )}
+            
+            {indicators.bollinger && indicators.bollinger.lower !== undefined && (
+              <div className="indicator">
+                <div className="indicator-label">Bollinger Lower</div>
+                <div className="indicator-value">
+                  {typeof indicators.bollinger.lower === 'number' 
+                    ? indicators.bollinger.lower.toFixed(8) 
+                    : 'N/A'}
+                </div>
+              </div>
+            )}
+            
             {indicators.fibonacci && indicators.fibonacci.level61_8 !== undefined && (
               <div className="indicator">
                 <div className="indicator-label">Fibonacci 61.8%</div>
@@ -563,9 +779,28 @@ const TradingBotPanel = () => {
         </div>
       )}
       
-      {/* Signals panel */}
+      {/* Signals panel with Clear button */}
       <div className="signals-panel">
-        <h3>Trading Signals {signals.length > 0 ? `(${signals.length})` : ''}</h3>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>
+          <h3>Trading Signals {signals.length > 0 ? `(${signals.length})` : ''}</h3>
+          {signals.length > 0 && (
+            <button 
+              onClick={handleClearSignals}
+              style={{
+                padding: '5px 10px',
+                backgroundColor: '#718096',
+                color: 'white',
+                border: 'none',
+                borderRadius: '4px',
+                cursor: 'pointer',
+                fontSize: '14px'
+              }}
+            >
+              Clear Signals
+            </button>
+          )}
+        </div>
+        
         {signals.length > 0 ? (
           <div className="signals-table">
             <table>
