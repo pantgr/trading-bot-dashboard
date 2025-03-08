@@ -1,26 +1,76 @@
-// src/components/TradingBotPanel.js - Complete version with table layout
+// src/components/TradingBotPanel.js
 import React, { useState, useEffect } from 'react';
 import { connectSocket, startBot, stopBot } from '../services/socketService';
 import CandlestickChartApex from './CandlestickChartApex';
 import axios from 'axios';
+import './TradingBotPanel.module.css';
 
 const TradingBotPanel = () => {
-  const [symbol, setSymbol] = useState('ETHBTC');
-  const [interval, setInterval] = useState('1m');
-  const [isRunning, setIsRunning] = useState(false);
+  // Get saved state from localStorage or use defaults
+  const getSavedState = () => {
+    try {
+      const savedState = localStorage.getItem('tradingBotState');
+      return savedState ? JSON.parse(savedState) : null;
+    } catch (e) {
+      console.error("Error loading saved state:", e);
+      return null;
+    }
+  };
+
+  const savedState = getSavedState();
+  
+  // Initialize state with saved values or defaults
+  const [symbol, setSymbol] = useState(savedState?.symbol || 'ETHBTC');
+  const [interval, setInterval] = useState(savedState?.interval || '1m');
+  const [isRunning, setIsRunning] = useState(false); // Always initialize as false and check with server
   const [signals, setSignals] = useState([]);
   const [lastPrice, setLastPrice] = useState(null);
   const [indicators, setIndicators] = useState(null);
   const [isLoading, setIsLoading] = useState(true);
+  const [selectedQuoteAsset, setSelectedQuoteAsset] = useState(savedState?.quoteAsset || 'BTC');
+  
+  // Trading pairs state
   const [availableSymbols, setAvailableSymbols] = useState([]);
   const [groupedSymbols, setGroupedSymbols] = useState({});
   const [isLoadingSymbols, setIsLoadingSymbols] = useState(true);
-  const [selectedQuoteAsset, setSelectedQuoteAsset] = useState('ALL');
   const [quoteAssets, setQuoteAssets] = useState([]);
+
+  // Save state to localStorage whenever it changes
+  useEffect(() => {
+    const stateToSave = {
+      symbol,
+      interval,
+      quoteAsset: selectedQuoteAsset
+    };
+    
+    localStorage.setItem('tradingBotState', JSON.stringify(stateToSave));
+  }, [symbol, interval, selectedQuoteAsset]);
 
   // Connect to socket once when component mounts
   useEffect(() => {
-    connectSocket();
+    const socket = connectSocket();
+    
+    // Check if the bot is already running for this symbol/interval when component mounts
+    const checkBotStatus = async () => {
+      try {
+        const response = await axios.get('/api/bot/active-symbols');
+        if (response.data && Array.isArray(response.data)) {
+          // Check if our symbol/interval combination is already being monitored
+          const isActive = response.data.some(item => 
+            item.symbol === symbol && item.interval === interval
+          );
+          setIsRunning(isActive);
+        }
+      } catch (error) {
+        console.error('Error checking bot status:', error);
+      }
+    };
+    
+    checkBotStatus();
+    
+    return () => {
+      // No need to disconnect socket here as it's shared across the app
+    };
   }, []);
 
   // Fetch available trading pairs from Binance
@@ -101,13 +151,13 @@ const TradingBotPanel = () => {
     };
     
     const handleBotStarted = (data) => {
-      if (data.symbol === symbol) {
+      if (data.symbol === symbol && data.interval === interval) {
         setIsRunning(true);
       }
     };
     
     const handleBotStopped = (data) => {
-      if (data.symbol === symbol) {
+      if (data.symbol === symbol && data.interval === interval) {
         setIsRunning(false);
       }
     };
@@ -139,7 +189,7 @@ const TradingBotPanel = () => {
     socket.on('bot_stopped', handleBotStopped);
     socket.on('trade_signal', handleTradeSignal);
     
-    // Reset signals when changing symbols
+    // Reset signals when changing symbols but preserve other state
     setSignals([]);
     
     return () => {
@@ -149,14 +199,16 @@ const TradingBotPanel = () => {
       socket.off('bot_stopped', handleBotStopped);
       socket.off('trade_signal', handleTradeSignal);
     };
-  }, [symbol]);
+  }, [symbol, interval]);
 
-  const handleStartBot = () => {
+  const handleStartBot = async () => {
     startBot(symbol, interval);
+    // We don't set isRunning here - we wait for the 'bot_started' event
   };
 
-  const handleStopBot = () => {
+  const handleStopBot = async () => {
     stopBot(symbol, interval);
+    // We don't set isRunning here - we wait for the 'bot_stopped' event
   };
 
   // Format price based on quote asset
