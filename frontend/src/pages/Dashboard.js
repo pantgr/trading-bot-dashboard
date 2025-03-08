@@ -1,4 +1,3 @@
-// src/pages/Dashboard.js - Cleaned version
 import React, { useState, useEffect } from 'react';
 import TradingBotPanel from '../components/TradingBotPanel';
 import BotSettingsPanel from '../components/BotSettingsPanel';
@@ -95,7 +94,6 @@ const Dashboard = () => {
         </button>
       </div>
       
-      {/* Bot Settings Panel */}
       <BotSettingsPanel 
         isOpen={isSettingsPanelOpen} 
         onClose={() => setIsSettingsPanelOpen(false)} 
@@ -157,7 +155,6 @@ const Dashboard = () => {
                   </thead>
                   <tbody>
                     {portfolio.assets.map((asset, index) => {
-                      // Calculate BTC values for USDT pairs
                       const priceBTC = asset.symbol.endsWith('USDT') 
                         ? asset.currentPrice / btcPrice 
                         : asset.currentPrice;
@@ -170,7 +167,6 @@ const Dashboard = () => {
                       const pnl = value - cost;
                       const pnlPercentage = (pnl / cost) * 100;
                       
-                      // Adjust symbol display for BTC pairs
                       const displaySymbol = asset.symbol.replace('USDT', '');
                       
                       return (
@@ -213,7 +209,6 @@ const Dashboard = () => {
                 </thead>
                 <tbody>
                   {transactions.map((tx, index) => {
-                    // Convert to BTC if needed
                     const priceBTC = tx.symbol.endsWith('USDT') 
                       ? tx.price / (btcPrice || 1) 
                       : tx.price;
@@ -221,7 +216,6 @@ const Dashboard = () => {
                       ? Math.abs(tx.value) / (btcPrice || 1)
                       : Math.abs(tx.value);
                     
-                    // Change symbol display
                     const displaySymbol = tx.symbol.replace('USDT', '');
                     
                     return (
