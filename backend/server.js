@@ -61,6 +61,18 @@ app.get('/api/health', async (req, res) => {
   });
 });
 
+app.get('/api/market-data/pairs', async (req, res) => {
+  try {
+    const pairs = await binanceService.getAllTradingPairs();
+    // Filter for active trading pairs only
+    const activePairs = pairs.filter(pair => pair.status === 'TRADING');
+    res.json(activePairs);
+  } catch (error) {
+    console.error('Error fetching trading pairs:', error);
+    res.status(500).json({ error: 'Failed to fetch trading pairs' });
+  }
+});
+
 // API for price data
 app.get('/api/market-data/historical/:symbol', async (req, res) => {
   try {

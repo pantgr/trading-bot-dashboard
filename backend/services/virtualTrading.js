@@ -39,39 +39,42 @@ exports.processSignal = async (signal, userId = 'default') => {
     // Get user's portfolio
     const portfolio = await this.initializePortfolio(userId);
     
+    // Get BTC price in USD for conversions if needed
+    let btcPrice = 1;
+    try {
+      btcPrice = await binanceService.getCurrentPrice('BTCUSDT');
+    } catch (err) {
+      console.warn('Could not fetch BTC price, using estimate:', err.message);
+    }
+    
     // Trading logic based on signals
     if (signal.action === 'BUY') {
-      // Investment amount (10% of available balance)
-      const investmentAmount = portfolio.balance * 0.1;
+      // Determine the quote asset from the symbol
+      const quoteAsset = signal.symbol.slice(-3); // Gets last 3 chars (e.g., BTC from SOLBTC)
       const price = parseFloat(signal.price || 0);
       
-      if (price > 0 && investmentAmount > 0) {
-        const quantity = investmentAmount / price;
+      if (price > 0) {
+        let investmentAmount = portfolio.balance * 0.1; // 10% of USD balance
+        let quantity;
         
-        // Execute the trade
+        // Convert investment amount to the appropriate currency
+        if (quoteAsset === 'BTC') {
+          // Convert USD to BTC for BTC pairs
+          const btcInvestmentAmount = investmentAmount / btcPrice;
+          quantity = btcInvestmentAmount / price;
+          console.log(`Converting USD ${investmentAmount} to BTC ${btcInvestmentAmount} for ${signal.symbol}`);
+        } else {
+          // For other pairs, use standard calculation
+          quantity = investmentAmount / price;
+        }
+        
+        console.log(`Calculated quantity for ${signal.symbol}: ${quantity} at price ${price}`);
+        
+        // Execute the trade with the correct quantity
         return this.executeTrade({
           userId,
           symbol: signal.symbol,
           action: 'BUY',
-          quantity,
-          price,
-          signal: signal.indicator
-        });
-      }
-    } 
-    else if (signal.action === 'SELL') {
-      // Check if we have the asset
-      const assetIndex = portfolio.assets.findIndex(a => a.symbol === signal.symbol);
-      
-      if (assetIndex >= 0 && portfolio.assets[assetIndex].quantity > 0) {
-        const price = parseFloat(signal.price || 0);
-        const quantity = portfolio.assets[assetIndex].quantity;
-        
-        // Execute the trade
-        return this.executeTrade({
-          userId,
-          symbol: signal.symbol,
-          action: 'SELL',
           quantity,
           price,
           signal: signal.indicator

@@ -1,18 +1,27 @@
-// src/components/TradingBotPanel.js - Πλήρης διόρθωση
+// src/components/TradingBotPanel.js - Updated with all trading pairs
 import React, { useState, useEffect } from 'react';
 import { connectSocket, startBot, stopBot } from '../services/socketService';
 import CandlestickChartApex from './CandlestickChartApex';
 import axios from 'axios';
 
 const TradingBotPanel = () => {
-  const [symbol, setSymbol] = useState('ETHBTC'); // Changed from SOLBTC to ETHBTC as default
-  const [interval, setInterval] = useState('1m');  // Change to 1m to match logs
+  const [symbol, setSymbol] = useState('ETHBTC'); // Default symbol
+  const [interval, setInterval] = useState('1m');
   const [isRunning, setIsRunning] = useState(false);
   const [signals, setSignals] = useState([]);
   const [lastPrice, setLastPrice] = useState(null);
   const [indicators, setIndicators] = useState(null);
   const [isLoading, setIsLoading] = useState(true);
   const [debugInfo, setDebugInfo] = useState({ socketEvents: [] });
+  
+  // State for available symbols
+  const [availableSymbols, setAvailableSymbols] = useState([]);
+  const [groupedSymbols, setGroupedSymbols] = useState({});
+  const [isLoadingSymbols, setIsLoadingSymbols] = useState(true);
+  
+  // State for quote asset filter
+  const [selectedQuoteAsset, setSelectedQuoteAsset] = useState('ALL');
+  const [quoteAssets, setQuoteAssets] = useState([]);
 
   // Connect to socket once when component mounts
   useEffect(() => {
@@ -36,6 +45,49 @@ const TradingBotPanel = () => {
     return () => {
       socket.offAny(handleAnyEvent);
     };
+  }, []);
+
+  // Fetch available trading pairs from Binance
+  useEffect(() => {
+    const fetchTradingPairs = async () => {
+      try {
+        setIsLoadingSymbols(true);
+        const response = await axios.get('/api/market-data/pairs');
+        
+        // Filter for active trading pairs only
+        const activePairs = response.data.filter(pair => pair.status === 'TRADING');
+        
+        console.log(`Found ${activePairs.length} active trading pairs`);
+        setAvailableSymbols(activePairs);
+        
+        // Extract unique quote assets
+        const quotesSet = new Set(activePairs.map(pair => pair.quoteAsset));
+        const quotes = ['ALL', ...Array.from(quotesSet).sort()];
+        setQuoteAssets(quotes);
+        
+        // Group symbols by quote asset
+        const grouped = activePairs.reduce((acc, pair) => {
+          if (!acc[pair.quoteAsset]) {
+            acc[pair.quoteAsset] = [];
+          }
+          acc[pair.quoteAsset].push(pair);
+          return acc;
+        }, {});
+        
+        // Sort pairs within each group alphabetically by base asset
+        Object.keys(grouped).forEach(quote => {
+          grouped[quote].sort((a, b) => a.baseAsset.localeCompare(b.baseAsset));
+        });
+        
+        setGroupedSymbols(grouped);
+      } catch (error) {
+        console.error('Error fetching trading pairs:', error);
+      } finally {
+        setIsLoadingSymbols(false);
+      }
+    };
+    
+    fetchTradingPairs();
   }, []);
 
   // Setup data and event listeners when symbol changes
@@ -91,9 +143,8 @@ const TradingBotPanel = () => {
     const handleTradeSignal = (signal) => {
       console.log(`[Component] Trade signal received: ${signal.action} ${signal.symbol} (${signal.indicator})`);
       
-      // Fix: Also handle BTCUSDT signals
-      if (signal.symbol === symbol || signal.symbol === 'BTCUSDT') {
-        console.log(`Signal matches current symbol ${symbol} or BTCUSDT - adding to display`);
+      if (signal.symbol === symbol) {
+        console.log(`Signal matches current symbol ${symbol} - adding to display`);
         
         setSignals(prev => {
           // Check if we already have this signal
@@ -124,8 +175,6 @@ const TradingBotPanel = () => {
     socket.on('bot_stopped', handleBotStopped);
     socket.on('trade_signal', handleTradeSignal);
     
-    // No test signals - removed
-    
     // Reset signals when changing symbols
     setSignals([]);
     
@@ -141,21 +190,37 @@ const TradingBotPanel = () => {
 
   const handleStartBot = () => {
     startBot(symbol, interval);
-    
-    // Also explicitly subscribe to BTCUSDT signals if needed
-    const socket = connectSocket();
-    socket.emit('subscribe_market', { symbol: 'BTCUSDT', interval: '1m' });
   };
 
   const handleStopBot = () => {
     stopBot(symbol, interval);
   };
-  
-  // Test signal function removed
 
-  // Μορφοποίηση τιμής με BTC
-  const formatBTCPrice = (price) => {
-    return price ? `₿${parseFloat(price).toFixed(8)}` : 'Loading...';
+  // Format price based on quote asset
+  const formatPrice = (price) => {
+    if (!price) return 'Loading...';
+    
+    const symbolInfo = getSymbolInfo(symbol);
+    const quoteAsset = symbolInfo?.quoteAsset || '';
+    
+    switch (quoteAsset) {
+      case 'BTC':
+        return `₿${parseFloat(price).toFixed(8)}`;
+      case 'ETH':
+        return `Ξ${parseFloat(price).toFixed(8)}`;
+      case 'USDT':
+      case 'BUSD':
+      case 'USDC':
+      case 'USD':
+      case 'DAI':
+        return `$${parseFloat(price).toFixed(quoteAsset === 'USDT' && parseFloat(price) < 0.01 ? 6 : 2)}`;
+      case 'EUR':
+        return `€${parseFloat(price).toFixed(2)}`;
+      case 'GBP':
+        return `£${parseFloat(price).toFixed(2)}`;
+      default:
+        return `${parseFloat(price).toFixed(8)} ${quoteAsset}`;
+    }
   };
 
   const handleSymbolChange = (e) => {
@@ -173,28 +238,86 @@ const TradingBotPanel = () => {
     }
     setInterval(e.target.value);
   };
+  
+  const handleQuoteAssetChange = (e) => {
+    setSelectedQuoteAsset(e.target.value);
+  };
+
+  // Helper function to get symbol info
+  const getSymbolInfo = (symbolString) => {
+    return availableSymbols.find(pair => pair.symbol === symbolString);
+  };
+
+  // Helper function to get display name for a symbol
+  const getSymbolDisplayName = (symbolString) => {
+    const symbolInfo = getSymbolInfo(symbolString);
+    if (symbolInfo) {
+      return `${symbolInfo.baseAsset} (${symbolInfo.baseAsset}/${symbolInfo.quoteAsset})`;
+    }
+    return symbolString;
+  };
+  
+  // Get filtered symbols based on selected quote asset
+  const getFilteredSymbols = () => {
+    if (selectedQuoteAsset === 'ALL') {
+      // Return all symbols, but organized by quote asset
+      return Object.entries(groupedSymbols);
+    } else {
+      // Return only symbols with the selected quote asset
+      return groupedSymbols[selectedQuoteAsset] ? 
+        [[selectedQuoteAsset, groupedSymbols[selectedQuoteAsset]]] : [];
+    }
+  };
 
   return (
     <div className="trading-bot-panel">
       <div className="bot-controls">
         <h2>Trading Bot Controls</h2>
         <div className="control-row">
+          {/* Quote Asset Filter */}
+          <div className="form-group">
+            <label>Quote Asset:</label>
+            {isLoadingSymbols ? (
+              <div className="loading-indicator">Loading...</div>
+            ) : (
+              <select 
+                value={selectedQuoteAsset} 
+                onChange={handleQuoteAssetChange}
+                disabled={isRunning}
+                className="quote-asset-select"
+              >
+                {quoteAssets.map(quote => (
+                  <option key={quote} value={quote}>
+                    {quote === 'ALL' ? 'All Assets' : quote}
+                  </option>
+                ))}
+              </select>
+            )}
+          </div>
+          
+          {/* Symbol Selection */}
           <div className="form-group">
             <label>Symbol:</label>
-            <select 
-              value={symbol} 
-              onChange={handleSymbolChange}
-              disabled={isRunning}
-            >
-              <option value="ETHBTC">Ethereum (ETH/BTC)</option>
-              <option value="BNBBTC">Binance Coin (BNB/BTC)</option>
-              <option value="ADABTC">Cardano (ADA/BTC)</option>
-              <option value="DOGEBTC">Dogecoin (DOGE/BTC)</option>
-              <option value="SOLBTC">Solana (SOL/BTC)</option>
-              <option value="XRPBTC">Ripple (XRP/BTC)</option>
-              <option value="DOTBTC">Polkadot (DOT/BTC)</option>
-              <option value="BTCUSDT">Bitcoin (BTC/USDT)</option>
-            </select>
+            {isLoadingSymbols ? (
+              <div className="loading-indicator">Loading available pairs...</div>
+            ) : (
+              <select 
+                value={symbol} 
+                onChange={handleSymbolChange}
+                disabled={isRunning}
+                className="symbol-select"
+              >
+                {getFilteredSymbols().map(([quoteAsset, symbols]) => (
+                  <optgroup key={quoteAsset} label={`${quoteAsset} Pairs`}>
+                    {symbols.map(pair => (
+                      <option key={pair.symbol} value={pair.symbol}>
+                        {pair.baseAsset}/{pair.quoteAsset}
+                      </option>
+                    ))}
+                  </optgroup>
+                ))}
+              </select>
+            )}
           </div>
           
           <div className="form-group">
@@ -223,9 +346,13 @@ const TradingBotPanel = () => {
           <div className="form-group">
             <label>Current Price:</label>
             <div className="price-display">
-              {isLoading ? 'Loading...' : formatBTCPrice(lastPrice)}
+              {isLoading ? 'Loading...' : formatPrice(lastPrice)}
             </div>
           </div>
+        </div>
+        
+        <div className="selected-pair-info">
+          <p>Selected pair: <strong>{getSymbolDisplayName(symbol)}</strong></p>
         </div>
         
         <div className="button-row">
@@ -233,6 +360,7 @@ const TradingBotPanel = () => {
             <button 
               className="start-button" 
               onClick={handleStartBot}
+              disabled={isLoadingSymbols}
             >
               Start Bot
             </button>
@@ -244,8 +372,6 @@ const TradingBotPanel = () => {
               Stop Bot
             </button>
           )}
-          
-          {/* Test signal button removed */}
         </div>
       </div>
       
@@ -333,20 +459,48 @@ const TradingBotPanel = () => {
                 </tr>
               </thead>
               <tbody>
-                {signals.map((signal, index) => (
-                  <tr key={index} className={signal.action.toLowerCase()}>
-                    <td>{new Date(signal.time).toLocaleTimeString()}</td>
-                    <td>{signal.symbol}</td>
-                    <td>{signal.indicator}</td>
-                    <td>{signal.action}</td>
-                    <td>
-                      {signal.symbol === 'BTCUSDT' 
-                        ? `$${parseFloat(signal.price).toFixed(2)}` 
-                        : `₿${parseFloat(signal.price).toFixed(8)}`}
-                    </td>
-                    <td>{signal.reason}</td>
-                  </tr>
-                ))}
+                {signals.map((signal, index) => {
+                  // Get the quote asset for this signal
+                  const signalSymbolInfo = availableSymbols.find(pair => pair.symbol === signal.symbol);
+                  const quoteAsset = signalSymbolInfo?.quoteAsset || '';
+                  
+                  // Format price based on quote asset
+                  let formattedPrice;
+                  switch (quoteAsset) {
+                    case 'BTC':
+                      formattedPrice = `₿${parseFloat(signal.price).toFixed(8)}`;
+                      break;
+                    case 'ETH':
+                      formattedPrice = `Ξ${parseFloat(signal.price).toFixed(8)}`;
+                      break;
+                    case 'USDT':
+                    case 'BUSD':
+                    case 'USDC':
+                    case 'USD':
+                    case 'DAI':
+                      formattedPrice = `$${parseFloat(signal.price).toFixed(2)}`;
+                      break;
+                    case 'EUR':
+                      formattedPrice = `€${parseFloat(signal.price).toFixed(2)}`;
+                      break;
+                    case 'GBP':
+                      formattedPrice = `£${parseFloat(signal.price).toFixed(2)}`;
+                      break;
+                    default:
+                      formattedPrice = `${parseFloat(signal.price).toFixed(8)} ${quoteAsset}`;
+                  }
+                  
+                  return (
+                    <tr key={index} className={signal.action.toLowerCase()}>
+                      <td>{new Date(signal.time).toLocaleTimeString()}</td>
+                      <td>{signal.symbol}</td>
+                      <td>{signal.indicator}</td>
+                      <td>{signal.action}</td>
+                      <td>{formattedPrice}</td>
+                      <td>{signal.reason}</td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>
@@ -360,10 +514,12 @@ const TradingBotPanel = () => {
         <details>
           <summary style={{cursor: 'pointer', fontWeight: 'bold'}}>Debug Information</summary>
           <div>
-            <p>Current Symbol: {symbol}</p>
+            <p>Current Symbol: {isLoadingSymbols ? 'Loading...' : getSymbolDisplayName(symbol)}</p>
             <p>Interval: {interval}</p>
             <p>Bot Running: {isRunning ? 'Yes' : 'No'}</p>
             <p>Signals Count: {signals.length}</p>
+            <p>Available Trading Pairs: {availableSymbols.length}</p>
+            <p>Available Quote Assets: {quoteAssets.length > 0 ? quoteAssets.join(', ') : 'Loading...'}</p>
             <p>Socket Events Received:</p>
             <ul style={{maxHeight: '200px', overflow: 'auto', fontSize: '12px'}}>
               {debugInfo.socketEvents.map((event, i) => (

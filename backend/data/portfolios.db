@@ -1,1 +1,2 @@
 {"$$indexCreated":{"fieldName":"userId","unique":true,"sparse":false}}
+{"userId":"default","balance":10000,"assets":[],"equity":10000,"createdAt":1741433901142,"updatedAt":1741433901142,"_id":"sFEKbpdDlkIgkUdU"}

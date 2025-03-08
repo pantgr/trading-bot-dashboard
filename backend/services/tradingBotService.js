@@ -231,21 +231,29 @@ processSignals(symbol, signals, userId) {
 
 // Προσθέστε μια νέα μέθοδο για την εκτέλεση της συναλλαγής
 // Αλλαγή στη μέθοδο executeTrade
+
 executeTrade(signal, userId) {
   if (!signal) return;
   
   console.log(`Executing consensus trade: ${signal.action} ${signal.symbol} based on consensus`);
   
-  // Αφαίρεσε το παρακάτω emit που προκαλεί το διπλό σήμα
-  /*
-  this.emit('trade_signal', {
-    ...signal,
-    userId
-  });
-  */
-  
-  // Εδώ μπορείς να προσθέσεις άλλη λογική εκτέλεσης συναλλαγών αν χρειαστεί
-  // χωρίς να εκπέμπεις δεύτερο σήμα
+  // Important: We need to actually call the virtualTradingService here
+  // This is likely missing in your current implementation
+  try {
+    // Import the virtualTradingService if it's not already imported at the top of the file
+    const virtualTradingService = require('./virtualTrading');
+    
+    // Process the signal to actually perform the trade
+    virtualTradingService.processSignal(signal, userId)
+      .then(result => {
+        console.log(`Trade executed successfully for ${signal.symbol}: ${signal.action}`);
+      })
+      .catch(error => {
+        console.error(`Error executing trade for ${signal.symbol}:`, error.message);
+      });
+  } catch (error) {
+    console.error(`Failed to execute trade for ${signal.symbol}:`, error);
+  }
 }
   
   // Λήψη των ενεργών συμβόλων που παρακολουθούνται

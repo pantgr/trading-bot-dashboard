@@ -194,12 +194,35 @@ const getCurrentPrice = async (symbol) => {
   }
 };
 
+// New function to get all available trading pairs from Binance
+const getAllTradingPairs = async () => {
+  try {
+    console.log('Fetching all trading pairs from Binance');
+    const response = await axios.get('https://api.binance.com/api/v3/exchangeInfo');
+    
+    // Extract and format the symbols data
+    const symbols = response.data.symbols.map(symbol => ({
+      symbol: symbol.symbol,
+      baseAsset: symbol.baseAsset,
+      quoteAsset: symbol.quoteAsset,
+      status: symbol.status
+    }));
+    
+    console.log(`Fetched ${symbols.length} trading pairs from Binance`);
+    return symbols;
+  } catch (error) {
+    console.error('Error fetching trading pairs:', error.message);
+    throw error;
+  }
+};
+
 // Εξαγωγή των μεθόδων
 module.exports = {
   getHistoricalCandles,
   subscribeToCandleUpdates,
   unsubscribeFromCandleUpdates,
   getCurrentPrice,
+  getAllTradingPairs, // Export the new function
   priceCache,
   candleCache
 };

@@ -1,7 +1,8 @@
-// src/components/CandlestickChartApex.js
+// src/components/CandlestickChartApex.js - Updated with currency formatting
 import React, { useState, useEffect, useRef } from 'react';
 import ReactApexChart from 'react-apexcharts';
 import { connectSocket } from '../services/socketService';
+import axios from 'axios';
 import './CandlestickChartApex.css';
 
 const CandlestickChartApex = ({ symbol, interval = '5m' }) => {
@@ -24,7 +25,10 @@ const CandlestickChartApex = ({ symbol, interval = '5m' }) => {
   
   const [signals, setSignals] = useState([]);
   const [isLoading, setIsLoading] = useState(true);
+  const [quoteAsset, setQuoteAsset] = useState('');
+  const [baseAsset, setBaseAsset] = useState('');
   
+  // Initialize options with default settings
   const [options, setOptions] = useState({
     chart: {
       type: 'candlestick',
@@ -195,6 +199,84 @@ const CandlestickChartApex = ({ symbol, interval = '5m' }) => {
     }
   };
 
+  // Fetch symbol details when symbol changes
+  useEffect(() => {
+    const fetchSymbolDetails = async () => {
+      try {
+        const response = await axios.get('/api/market-data/pairs');
+        const symbolInfo = response.data.find(pair => pair.symbol === symbol);
+        
+        if (symbolInfo) {
+          setQuoteAsset(symbolInfo.quoteAsset);
+          setBaseAsset(symbolInfo.baseAsset);
+          
+          // Update chart title and y-axis formatter
+          const newOptions = { ...options };
+          newOptions.title.text = `${symbolInfo.baseAsset}/${symbolInfo.quoteAsset} (${interval})`;
+          
+          // Set appropriate decimal precision based on quote asset
+          let decimals = 8;
+          let prefix = '';
+          
+          switch (symbolInfo.quoteAsset) {
+            case 'USDT':
+            case 'BUSD':
+            case 'USDC':
+            case 'USD':
+            case 'DAI':
+              decimals = 2;
+              prefix = '$';
+              break;
+            case 'EUR':
+              decimals = 2;
+              prefix = '€';
+              break;
+            case 'GBP':
+              decimals = 2;
+              prefix = '£';
+              break;
+            case 'BTC':
+              prefix = '₿';
+              break;
+            case 'ETH':
+              prefix = 'Ξ';
+              break;
+            default:
+              // For other quote assets, use default (8 decimals, no prefix)
+              break;
+          }
+          
+          // Configure price display in tooltip and y-axis
+          newOptions.yaxis.labels.formatter = function(val) {
+            return prefix + val.toFixed(decimals);
+          };
+          
+          newOptions.tooltip.custom = function({ seriesIndex, dataPointIndex, w }) {
+            const o = w.globals.seriesCandleO[seriesIndex][dataPointIndex];
+            const h = w.globals.seriesCandleH[seriesIndex][dataPointIndex];
+            const l = w.globals.seriesCandleL[seriesIndex][dataPointIndex];
+            const c = w.globals.seriesCandleC[seriesIndex][dataPointIndex];
+            
+            return (
+              '<div class="apexcharts-tooltip-candlestick">' +
+              '<div>Open: <span class="value">' + prefix + o.toFixed(decimals) + '</span></div>' +
+              '<div>High: <span class="value">' + prefix + h.toFixed(decimals) + '</span></div>' +
+              '<div>Low: <span class="value">' + prefix + l.toFixed(decimals) + '</span></div>' +
+              '<div>Close: <span class="value">' + prefix + c.toFixed(decimals) + '</span></div>' +
+              '</div>'
+            );
+          };
+          
+          setOptions(newOptions);
+        }
+      } catch (error) {
+        console.error('Error fetching symbol details:', error);
+      }
+    };
+    
+    fetchSymbolDetails();
+  }, [symbol, interval]);
+
   // Format data for ApexCharts
   const formatCandleData = (candles) => {
     if (!candles || !candles.length) return [];
@@ -252,8 +334,6 @@ const CandlestickChartApex = ({ symbol, interval = '5m' }) => {
   };
 
   // Initialize socket and handle cleanup
-  // We include symbol and interval in dependencies to satisfy eslint
-  // but use isInitializedRef to ensure initialization only happens once
   useEffect(() => {
     // Only connect socket once
     if (!isInitializedRef.current) {
@@ -277,7 +357,7 @@ const CandlestickChartApex = ({ symbol, interval = '5m' }) => {
         clearTimeout(signalUpdateTimeoutRef.current);
       }
     };
-  }, [symbol, interval]); // Include dependencies to satisfy eslint
+  }, []);
 
   // Handle subscription for current symbol and interval
   useEffect(() => {
@@ -450,6 +530,38 @@ const CandlestickChartApex = ({ symbol, interval = '5m' }) => {
     };
   }, [symbol, interval]);
   
+  // Format currency info for display
+  const formatCurrencyInfo = () => {
+    if (!baseAsset || !quoteAsset) return '';
+    
+    let quoteSymbol = '';
+    switch (quoteAsset) {
+      case 'BTC':
+        quoteSymbol = '₿';
+        break;
+      case 'ETH':
+        quoteSymbol = 'Ξ';
+        break;
+      case 'USDT':
+      case 'BUSD':
+      case 'USDC':
+      case 'USD':
+      case 'DAI':
+        quoteSymbol = '$';
+        break;
+      case 'EUR':
+        quoteSymbol = '€';
+        break;
+      case 'GBP':
+        quoteSymbol = '£';
+        break;
+      default:
+        quoteSymbol = quoteAsset;
+    }
+    
+    return `${baseAsset}/${quoteAsset} (${quoteSymbol})`;
+  };
+  
   return (
     <div className="candlestick-chart-container">
       {isLoading && (
@@ -458,6 +570,10 @@ const CandlestickChartApex = ({ symbol, interval = '5m' }) => {
           <p>Loading chart data...</p>
         </div>
       )}
+      
+      <div className="chart-header">
+        <h3>{formatCurrencyInfo()} - {interval} Timeframe</h3>
+      </div>
       
       <div className="chart-wrapper">
         <ReactApexChart
