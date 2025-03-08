@@ -1,8 +1,10 @@
-// server.js - Updated to include signal routes
+// server.js - Final updated version with all new routes
 require('dotenv').config();
 const express = require('express');
 const configRoutes = require('./routes/configRoutes');
 const signalRoutes = require('./routes/signalRoutes');
+const marketDataRoutes = require('./routes/marketDataRoutes');
+const adminRoutes = require('./routes/adminRoutes');
 
 const http = require('http');
 const socketIo = require('socket.io');
@@ -73,64 +75,6 @@ app.get('/api/health', async (req, res) => {
   });
 });
 
-app.get('/api/market-data/pairs', async (req, res) => {
-  try {
-    const pairs = await binanceService.getAllTradingPairs();
-    // Filter for active trading pairs only
-    const activePairs = pairs.filter(pair => pair.status === 'TRADING');
-    res.json(activePairs);
-  } catch (error) {
-    console.error('Error fetching trading pairs:', error);
-    res.status(500).json({ error: 'Failed to fetch trading pairs' });
-  }
-});
-
-// API for price data
-app.get('/api/market-data/historical/:symbol', async (req, res) => {
-  try {
-    const { symbol } = req.params;
-    const { interval = '1h', limit = '100' } = req.query;
-    
-    const data = await binanceService.getHistoricalCandles(
-      symbol,
-      interval,
-      parseInt(limit)
-    );
-    
-    res.json(data);
-  } catch (error) {
-    console.error('Error fetching historical data:', error);
-    res.status(500).json({ error: 'Failed to fetch historical data' });
-  }
-});
-
-app.get('/api/market-data/price/:symbol', async (req, res) => {
-  try {
-    const { symbol } = req.params;
-    const price = await binanceService.getCurrentPrice(symbol);
-    
-    res.json({ symbol, price });
-  } catch (error) {
-    console.error('Error fetching current price:', error);
-    res.status(500).json({ error: 'Failed to fetch current price' });
-  }
-});
-
-// API for technical indicators
-app.get('/api/indicators/:symbol', async (req, res) => {
-  try {
-    const { symbol } = req.params;
-    const { interval = '1h' } = req.query;
-    
-    const data = await indicatorsService.initializeIndicators(symbol, interval);
-    
-    res.json(data);
-  } catch (error) {
-    console.error('Error calculating indicators:', error);
-    res.status(500).json({ error: 'Failed to calculate indicators' });
-  }
-});
-
 // API for the trading bot
 app.post('/api/bot/start', async (req, res) => {
   try {
@@ -184,6 +128,21 @@ app.get('/api/bot/active-symbols', async (req, res) => {
   } catch (error) {
     console.error('Error getting active symbols:', error);
     res.status(500).json({ error: 'Failed to get active symbols' });
+  }
+});
+
+// API for technical indicators
+app.get('/api/indicators/:symbol', async (req, res) => {
+  try {
+    const { symbol } = req.params;
+    const { interval = '1h' } = req.query;
+    
+    const data = await indicatorsService.initializeIndicators(symbol, interval);
+    
+    res.json(data);
+  } catch (error) {
+    console.error('Error calculating indicators:', error);
+    res.status(500).json({ error: 'Failed to calculate indicators' });
   }
 });
 
@@ -301,14 +260,12 @@ app.post('/api/virtual-trade/execute', async (req, res) => {
   }
 });
 
-// Add the bot settings router
+// Add all router modules
 app.use('/api/bot', botSettingsRouter);
-
-// Add config routes
 app.use('/api/config', configRoutes);
-
-// Add signal routes
 app.use('/api/signals', signalRoutes);
+app.use('/api/market-data', marketDataRoutes);
+app.use('/api/admin', adminRoutes);
 
 // Create HTTP server
 const server = http.createServer(app);
@@ -553,6 +510,31 @@ server.listen(PORT, () => {
   console.log(`API endpoints available at http://localhost:${PORT}/api`);
   console.log(`Trading bot status: ${tradingBot.isRunning ? 'RUNNING' : 'STOPPED'}`);
 });
+
+// Set up periodic database cleanup
+const setupDatabaseMaintenance = () => {
+  // Cleanup old data once a day
+  setInterval(async () => {
+    try {
+      console.log('Starting daily database maintenance...');
+      
+      await Signal.cleanup(30 * 24 * 60 * 60 * 1000); // 30 days for signals
+      
+      await MarketData.cleanup({
+        priceDataAge: 1 * 24 * 60 * 60 * 1000,  // 1 day for price data
+        candleDataAge: 7 * 24 * 60 * 60 * 1000  // 7 days for candle data
+      });
+      
+      await ActiveBot.cleanup(7 * 24 * 60 * 60 * 1000); // 7 days for inactive bots
+      
+      console.log('Daily database maintenance completed');
+    } catch (error) {
+      console.error('Error during database maintenance:', error);
+    }
+  }, 24 * 60 * 60 * 1000); // Run once every 24 hours
+};
+
+setupDatabaseMaintenance();
 
 // Handle process errors
 process.on('uncaughtException', (error) => {

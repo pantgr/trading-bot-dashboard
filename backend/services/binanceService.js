@@ -1,20 +1,27 @@
-// services/binanceService.js
+// services/binanceService.js - Updated to use database instead of memory
 const WebSocket = require('ws');
 const axios = require('axios');
+const MarketData = require('../models/MarketData');
 
-// Map για διαχείριση των συνδέσεων WebSocket
+// Map for managing WebSocket connections
 const wsConnections = new Map();
-// Cache για τις τελευταίες τιμές
-const priceCache = new Map();
-// Cache για ιστορικά δεδομένα κεριών
-const candleCache = new Map();
 
-// Λήψη ιστορικών δεδομένων τιμών από το Binance API
+// Get historical candlestick data from Binance API or database
 const getHistoricalCandles = async (symbol, interval = '1h', limit = 100) => {
   try {
     const formattedSymbol = symbol.toUpperCase();
     console.log(`Fetching historical candles for ${formattedSymbol}, interval: ${interval}, limit: ${limit}`);
     
+    // Try to get data from database first
+    const cachedCandles = await MarketData.getCandles(formattedSymbol, interval, limit);
+    
+    // If we have enough candles in the database, use them
+    if (cachedCandles.length >= limit) {
+      console.log(`Using ${cachedCandles.length} cached candles from database for ${formattedSymbol}`);
+      return cachedCandles;
+    }
+    
+    // Otherwise, fetch from Binance API
     const response = await axios.get('https://api.binance.com/api/v3/klines', {
       params: {
         symbol: formattedSymbol,
@@ -23,9 +30,9 @@ const getHistoricalCandles = async (symbol, interval = '1h', limit = 100) => {
       }
     });
 
-    // Μετατροπή σε format κατάλληλο για τεχνική ανάλυση
+    // Convert to format suitable for technical analysis
     const candles = response.data.map(candle => ({
-      time: candle[0], // Timestamp ανοίγματος
+      time: candle[0], // Opening timestamp
       open: parseFloat(candle[1]),
       high: parseFloat(candle[2]),
       low: parseFloat(candle[3]),
@@ -33,12 +40,17 @@ const getHistoricalCandles = async (symbol, interval = '1h', limit = 100) => {
       volume: parseFloat(candle[5])
     }));
 
-    // Αποθήκευση στο cache
-    candleCache.set(`${formattedSymbol}-${interval}`, candles);
+    // Save each candle to database
+    for (const candle of candles) {
+      await MarketData.saveCandle(formattedSymbol, interval, {
+        ...candle,
+        isClosed: true
+      });
+    }
     
-    // Ενημέρωση της τελευταίας τιμής
+    // Update latest price
     if (candles.length > 0) {
-      priceCache.set(formattedSymbol, candles[candles.length - 1].close);
+      await MarketData.savePrice(formattedSymbol, candles[candles.length - 1].close);
     }
     
     console.log(`Received ${candles.length} historical candles for ${formattedSymbol}`);
@@ -49,12 +61,12 @@ const getHistoricalCandles = async (symbol, interval = '1h', limit = 100) => {
   }
 };
 
-// Σύνδεση με Binance WebSocket για κεριά σε πραγματικό χρόνο
+// Connect to Binance WebSocket for real-time candles
 const subscribeToCandleUpdates = (symbol, interval, callback) => {
   const formattedSymbol = symbol.toLowerCase();
   const wsKey = `${formattedSymbol}-${interval}`;
   
-  // Αν υπάρχει ήδη ενεργή σύνδεση, προσθέτουμε τον callback
+  // If there's already an active connection, add the callback
   if (wsConnections.has(wsKey)) {
     const connection = wsConnections.get(wsKey);
     connection.callbacks.push(callback);
@@ -62,7 +74,7 @@ const subscribeToCandleUpdates = (symbol, interval, callback) => {
     return;
   }
   
-  // Σύνδεση με το Binance WebSocket
+  // Connect to Binance WebSocket
   console.log(`Creating new WebSocket connection for ${wsKey}`);
   const ws = new WebSocket(`wss://stream.binance.com:9443/ws/${formattedSymbol}@kline_${interval}`);
   
@@ -78,12 +90,12 @@ const subscribeToCandleUpdates = (symbol, interval, callback) => {
     console.log(`WebSocket connection opened for ${wsKey}`);
   });
   
-  ws.on('message', (data) => {
+  ws.on('message', async (data) => {
     try {
       const message = JSON.parse(data);
       const kline = message.k;
       
-      // Κεριά που είναι κλειστά (ολοκληρωμένα)
+      // Candle data
       const candle = {
         symbol: message.s,
         time: kline.t,
@@ -95,23 +107,15 @@ const subscribeToCandleUpdates = (symbol, interval, callback) => {
         isClosed: kline.x
       };
       
-      // Ενημέρωση της τελευταίας τιμής στο cache
-      priceCache.set(message.s, candle.close);
+      // Save the latest price to database
+      await MarketData.savePrice(message.s, candle.close);
       
-      // Ενημέρωση του candleCache με το νέο κερί αν έχει κλείσει
+      // Save completed candle to database
       if (candle.isClosed) {
-        const cacheKey = `${message.s}-${interval}`;
-        if (candleCache.has(cacheKey)) {
-          const candles = candleCache.get(cacheKey);
-          candles.push(candle);
-          // Διατήρηση των τελευταίων 500 κεριών
-          if (candles.length > 500) {
-            candles.shift();
-          }
-        }
+        await MarketData.saveCandle(message.s, interval, candle);
       }
       
-      // Κλήση όλων των callbacks με τα νέα δεδομένα
+      // Call all callbacks with the new data
       connection.callbacks.forEach(cb => cb(candle));
     } catch (error) {
       console.error(`Error processing WebSocket message for ${wsKey}:`, error);
@@ -126,7 +130,7 @@ const subscribeToCandleUpdates = (symbol, interval, callback) => {
     console.log(`WebSocket connection closed for ${wsKey}`);
     connection.isActive = false;
     
-    // Επανασύνδεση μετά από 5 δευτερόλεπτα
+    // Reconnect after 5 seconds
     setTimeout(() => {
       if (wsConnections.has(wsKey) && !wsConnections.get(wsKey).isActive) {
         console.log(`Attempting to reconnect WebSocket for ${wsKey}`);
@@ -134,7 +138,7 @@ const subscribeToCandleUpdates = (symbol, interval, callback) => {
         if (connection.callbacks.length > 0) {
           subscribeToCandleUpdates(symbol, interval, connection.callbacks[0]);
           
-          // Προσθήκη των υπολοίπων callbacks
+          // Add the remaining callbacks
           for (let i = 1; i < connection.callbacks.length; i++) {
             const existingConnection = wsConnections.get(wsKey);
             existingConnection.callbacks.push(connection.callbacks[i]);
@@ -147,7 +151,7 @@ const subscribeToCandleUpdates = (symbol, interval, callback) => {
   return connection;
 };
 
-// Ακύρωση συνδρομής για έναν συγκεκριμένο callback
+// Unsubscribe a specific callback
 const unsubscribeFromCandleUpdates = (symbol, interval, callback) => {
   const formattedSymbol = symbol.toLowerCase();
   const wsKey = `${formattedSymbol}-${interval}`;
@@ -160,7 +164,7 @@ const unsubscribeFromCandleUpdates = (symbol, interval, callback) => {
       connection.callbacks.splice(callbackIndex, 1);
       console.log(`Removed callback for ${wsKey}, remaining callbacks: ${connection.callbacks.length}`);
       
-      // Αν δεν υπάρχουν άλλοι callbacks, κλείνουμε τη σύνδεση
+      // If there are no more callbacks, close the connection
       if (connection.callbacks.length === 0) {
         connection.ws.close();
         wsConnections.delete(wsKey);
@@ -170,23 +174,29 @@ const unsubscribeFromCandleUpdates = (symbol, interval, callback) => {
   }
 };
 
-// Λήψη της τρέχουσας τιμής από το cache ή από το API
+// Get current price from database or Binance API
 const getCurrentPrice = async (symbol) => {
   const formattedSymbol = symbol.toUpperCase();
   
-  // Έλεγχος αν υπάρχει στο cache
-  if (priceCache.has(formattedSymbol)) {
-    return priceCache.get(formattedSymbol);
-  }
-  
-  // Αν δεν υπάρχει στο cache, ζητάμε από το API
   try {
+    // First check the database
+    const latestPrice = await MarketData.getLatestPrice(formattedSymbol);
+    
+    // If price exists in database and is recent (within the last 5 minutes), use it
+    if (latestPrice && (Date.now() - latestPrice.time < 5 * 60 * 1000)) {
+      return latestPrice.price;
+    }
+    
+    // Otherwise, fetch from Binance API
     const response = await axios.get('https://api.binance.com/api/v3/ticker/price', {
       params: { symbol: formattedSymbol }
     });
     
     const price = parseFloat(response.data.price);
-    priceCache.set(formattedSymbol, price);
+    
+    // Save to database
+    await MarketData.savePrice(formattedSymbol, price);
+    
     return price;
   } catch (error) {
     console.error(`Error fetching current price for ${symbol}:`, error.message);
@@ -194,10 +204,26 @@ const getCurrentPrice = async (symbol) => {
   }
 };
 
-// New function to get all available trading pairs from Binance
+// Get all available trading pairs from Binance
 const getAllTradingPairs = async () => {
   try {
     console.log('Fetching all trading pairs from Binance');
+    
+    // Check if we have recent data in the database
+    const cacheKey = 'trading_pairs';
+    const cachedData = await MarketData.findOne({ 
+      type: 'trading_pairs',
+      key: cacheKey,
+      // Data less than 1 hour old
+      updatedAt: { $gt: Date.now() - 60 * 60 * 1000 }
+    });
+    
+    if (cachedData && cachedData.pairs) {
+      console.log(`Using ${cachedData.pairs.length} cached trading pairs from database`);
+      return cachedData.pairs;
+    }
+    
+    // If not found in cache, fetch from Binance
     const response = await axios.get('https://api.binance.com/api/v3/exchangeInfo');
     
     // Extract and format the symbols data
@@ -208,6 +234,14 @@ const getAllTradingPairs = async () => {
       status: symbol.status
     }));
     
+    // Save to database
+    const marketData = new MarketData({
+      type: 'trading_pairs',
+      key: cacheKey,
+      pairs: symbols
+    });
+    await marketData.save();
+    
     console.log(`Fetched ${symbols.length} trading pairs from Binance`);
     return symbols;
   } catch (error) {
@@ -216,13 +250,42 @@ const getAllTradingPairs = async () => {
   }
 };
 
-// Εξαγωγή των μεθόδων
+// Test connection to Binance API with provided API keys
+const testConnection = async (apiKey, secretKey) => {
+  try {
+    // Use the Binance API endpoint to test the connection
+    const response = await axios.get('https://api.binance.com/api/v3/account', {
+      headers: {
+        'X-MBX-APIKEY': apiKey
+      },
+      params: {
+        timestamp: Date.now(),
+        signature: 'test' // This will fail the signature check but verify the API key
+      }
+    });
+    
+    return true;
+  } catch (error) {
+    // If error is related to invalid signature but API key is valid
+    if (error.response && 
+        error.response.data && 
+        error.response.data.code && 
+        error.response.data.code === -1022) {
+      // API key is valid but signature failed (expected)
+      return true;
+    }
+    
+    console.error('Error testing Binance API connection:', error.message);
+    throw new Error('Invalid API key or connection problem');
+  }
+};
+
+// Export methods
 module.exports = {
   getHistoricalCandles,
   subscribeToCandleUpdates,
   unsubscribeFromCandleUpdates,
   getCurrentPrice,
-  getAllTradingPairs, // Export the new function
-  priceCache,
-  candleCache
+  getAllTradingPairs,
+  testConnection
 };

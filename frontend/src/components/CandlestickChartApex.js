@@ -1,4 +1,4 @@
-// src/components/CandlestickChartApex.js - Με επιθετική διατήρηση των σημάτων
+// src/components/CandlestickChartApex.js - Updated to fetch signals from API
 import React, { useState, useEffect, useRef } from 'react';
 import ReactApexChart from 'react-apexcharts';
 import { connectSocket } from '../services/socketService';
@@ -214,6 +214,28 @@ const CandlestickChartApex = ({ symbol, interval = '5m', initialSignals = [] }) 
     }
   };
 
+  // Fetch signals from API
+  const fetchSignals = async () => {
+    try {
+      const response = await axios.get('/api/signals/recent', {
+        params: {
+          symbol,
+          interval,
+          limit: 100
+        }
+      });
+      
+      if (response.data && Array.isArray(response.data)) {
+        console.log(`Fetched ${response.data.length} signals from API`);
+        signalsRef.current = response.data;
+        setSignals(response.data);
+        updateSignalAnnotations(response.data);
+      }
+    } catch (error) {
+      console.error('Error fetching signals:', error);
+    }
+  };
+
   // Create a function to persistently keep annotations updated
   const ensureAnnotationsPresent = () => {
     if (signalsRef.current && signalsRef.current.length > 0) {
@@ -230,6 +252,9 @@ const CandlestickChartApex = ({ symbol, interval = '5m', initialSignals = [] }) 
         console.log('Setting initial annotations:', initialSignals.length);
         updateSignalAnnotations(initialSignals);
       }, 500);
+    } else {
+      // If no initial signals provided, fetch from API
+      fetchSignals();
     }
 
     // Set up a timer to reapply annotations every few seconds
@@ -244,6 +269,11 @@ const CandlestickChartApex = ({ symbol, interval = '5m', initialSignals = [] }) 
       }
     };
   }, []);
+
+  // When symbol or interval changes, refetch signals
+  useEffect(() => {
+    fetchSignals();
+  }, [symbol, interval]);
 
   // Update signal annotations without triggering re-renders
   const updateSignalAnnotations = (allSignals) => {
@@ -539,6 +569,9 @@ const CandlestickChartApex = ({ symbol, interval = '5m', initialSignals = [] }) 
           setSignals(signalsRef.current);
           updateSignalAnnotations(signalsRef.current);
         }, 300);
+        
+        // Also trigger a fetch from the API to ensure we have all signals
+        fetchSignals();
       }
     };
     

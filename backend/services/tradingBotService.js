@@ -1,4 +1,4 @@
-// services/tradingBotService.js - Complete fixed version
+// services/tradingBotService.js - Updated to use database instead of memory
 const binanceService = require('./binanceService');
 const indicatorsService = require('./indicatorsService');
 const { EventEmitter } = require('events');
@@ -6,13 +6,15 @@ const consensusService = require('./consensusService');
 const configService = require('./configService');
 const virtualTradingService = require('./virtualTrading');
 
+// Import new database models
+const Signal = require('../models/Signal');
+const ActiveBot = require('../models/ActiveBot');
+const MarketData = require('../models/MarketData');
+
 // Trading Bot with event emitter to send updates
 class TradingBot extends EventEmitter {
   constructor() {
     super();
-    this.activeSymbols = new Map(); // Symbols being monitored
-    this.lastSignals = new Map(); // Last signals per symbol
-    this.signalWindow = {}; // Window of signals for each symbol
     this.isRunning = false;
     
     // Load settings from config service at startup
@@ -23,6 +25,18 @@ class TradingBot extends EventEmitter {
         } else {
           console.log("Bot initialized with default settings");
         }
+        
+        // Restore active bots from database
+        this.restoreActiveBots()
+          .then(count => {
+            console.log(`Restored ${count} active bots from database`);
+            
+            // Set up periodic cleanup of old data
+            this.setupCleanupTasks();
+          })
+          .catch(err => {
+            console.error("Failed to restore active bots:", err);
+          });
       })
       .catch(err => {
         console.error("Failed to initialize settings:", err);
@@ -34,22 +48,24 @@ class TradingBot extends EventEmitter {
     const formattedSymbol = symbol.toUpperCase();
     const botKey = `${formattedSymbol}-${interval}-${userId}`;
     
-    // Check if already monitoring
-    if (this.activeSymbols.has(botKey)) {
-      console.log(`Bot already monitoring ${botKey}`);
-      return;
-    }
-    
-    console.log(`Starting trading bot for ${botKey}`);
-    
     try {
+      // Check if bot is already running in database
+      const existingBot = await ActiveBot.findByKey(formattedSymbol, interval, userId);
+      
+      if (existingBot && existingBot.active) {
+        console.log(`Bot already monitoring ${botKey}`);
+        return;
+      }
+      
+      console.log(`Starting trading bot for ${botKey}`);
+      
       // Initialize indicators and get historical data
       const initialData = await indicatorsService.initializeIndicators(formattedSymbol, interval);
       
       // Process initial signals
       if (initialData.signals && initialData.signals.length > 0) {
         console.log(`Processing ${initialData.signals.length} initial signals for ${formattedSymbol}`);
-        this.processSignals(formattedSymbol, initialData.signals, userId);
+        await this.processSignals(formattedSymbol, initialData.signals, userId);
       }
       
       // Create a bound callback for this specific symbol/interval
@@ -64,16 +80,17 @@ class TradingBot extends EventEmitter {
         boundCallback
       );
       
-      // Store monitoring data
-      this.activeSymbols.set(botKey, {
+      // Store active bot in database
+      const activeBot = new ActiveBot({
         symbol: formattedSymbol,
         interval,
         userId,
-        connection,
-        updateCallback: boundCallback,
-        startTime: Date.now()
+        active: true,
+        startTime: Date.now(),
+        callbackId: Math.random().toString(36).substring(2, 15)
       });
       
+      await activeBot.save();
       this.isRunning = true;
       
       // Emit bot started event
@@ -99,161 +116,193 @@ class TradingBot extends EventEmitter {
   }
   
   // Stop monitoring for a symbol
-  stopMonitoring(symbol, interval = '5m', userId = 'default') {
+  async stopMonitoring(symbol, interval = '5m', userId = 'default') {
     const formattedSymbol = symbol.toUpperCase();
     const botKey = `${formattedSymbol}-${interval}-${userId}`;
     
-    if (this.activeSymbols.has(botKey)) {
-      const botData = this.activeSymbols.get(botKey);
+    try {
+      // Find the bot in database
+      const activeBot = await ActiveBot.findByKey(formattedSymbol, interval, userId);
       
-      // Unsubscribe from Binance
-      binanceService.unsubscribeFromCandleUpdates(
-        formattedSymbol, 
-        interval, 
-        botData.updateCallback
-      );
+      if (activeBot && activeBot.active) {
+        // Unsubscribe from Binance
+        binanceService.unsubscribeFromCandleUpdates(
+          formattedSymbol, 
+          interval
+        );
+        
+        // Mark bot as inactive and update database
+        activeBot.active = false;
+        activeBot.stopTime = Date.now();
+        await activeBot.save();
+        
+        console.log(`Stopped monitoring ${botKey}`);
+        
+        // Emit bot stopped event
+        this.emit('bot_stopped', {
+          symbol: formattedSymbol,
+          userId,
+          interval,
+          time: Date.now()
+        });
+        
+        // Update running state
+        const activeBots = await ActiveBot.findActive();
+        this.isRunning = activeBots.length > 0;
+        
+        return true;
+      }
       
-      this.activeSymbols.delete(botKey);
-      console.log(`Stopped monitoring ${botKey}`);
-      
-      // Emit bot stopped event
-      this.emit('bot_stopped', {
-        symbol: formattedSymbol,
-        userId,
-        interval,
-        time: Date.now()
-      });
-      
-      // Check if there are other active symbols
-      this.isRunning = this.activeSymbols.size > 0;
-      
-      return true;
+      return false;
+    } catch (error) {
+      console.error(`Error stopping bot for ${botKey}:`, error);
+      return false;
     }
-    
-    return false;
   }
   
   // Callback for real-time updates
   async updateCallback(candle, symbol, interval, userId) {
-    if (candle.isClosed) {
-      // Get the latest candles (at least 50)
-      const cacheKey = `${symbol}-${interval}`;
-      let candles = binanceService.candleCache.get(cacheKey) || [];
-      
-      // If not enough candles in cache, request more
-      if (candles.length < 50) {
-        candles = await binanceService.getHistoricalCandles(symbol, interval, 100);
+    try {
+      // First, check if the bot is still active
+      const activeBot = await ActiveBot.findByKey(symbol, interval, userId);
+      if (!activeBot || !activeBot.active) {
+        console.log(`Bot for ${symbol} (${interval}) is no longer active, skipping update`);
+        // Unsubscribe from updates
+        binanceService.unsubscribeFromCandleUpdates(symbol, interval);
+        return;
       }
       
-      // Calculate indicators
-      const indicators = indicatorsService.calculateIndicators(candles);
-      
-      // Check for trading signals
-      const signals = indicatorsService.checkTradingSignals(symbol, candles, indicators);
-      
-      // Process new signals
-      if (signals.length > 0) {
-        console.log(`Processing ${signals.length} new signals for ${symbol}`);
-        this.processSignals(symbol, signals, userId);
-      }
-      
-      // Emit the indicators update event - ensure we include both 'current' and 'historical'
-      this.emit('indicators_update', {
-        symbol,
-        userId,
-        indicators,
-        time: candle.time
-      });
-    }
-    
-    // Emit the price update event
-    this.emit('price_update', {
-      symbol,
-      userId,
-      price: candle.close,
-      time: candle.time,
-      candle
-    });
-  }
-  
-  // Process trading signals
-  processSignals(symbol, signals, userId) {
-    if (!signals || signals.length === 0) return;
-    
-    // Create the signal window if it doesn't exist
-    if (!this.signalWindow) {
-      this.signalWindow = {};
-    }
-    
-    if (!this.signalWindow[symbol]) {
-      this.signalWindow[symbol] = [];
-    }
-    
-    // Add the new signals to the window
-    this.signalWindow[symbol] = [...this.signalWindow[symbol], ...signals];
-    
-    // Keep only recent signals (last 15 minutes)
-    const fifteenMinutesAgo = Date.now() - 15 * 60 * 1000;
-    this.signalWindow[symbol] = this.signalWindow[symbol].filter(signal => signal.time > fifteenMinutesAgo);
-    
-    // Get the current price from the most recent signal
-    const currentPrice = signals[0].price;
-    
-    // Process individual signals (for display in UI)
-    for (const signal of signals) {
-      const signalKey = `${symbol}-${signal.indicator}-${signal.action}`;
-      
-      // Check if we've already processed this signal recently
-      if (this.lastSignals.has(signalKey)) {
-        const lastTime = this.lastSignals.get(signalKey);
-        // Skip if signal was given again in the last 30 minutes
-        if (signal.time - lastTime < 30 * 60 * 1000) {
-          continue;
-        }
-      }
-      
-      // Save the signal time
-      this.lastSignals.set(signalKey, signal.time);
-      
-      console.log(`Emitting trade signal: ${signal.indicator} ${signal.action} for ${symbol}`);
-      
-      // Emit trading signal (for display, not execution)
-      this.emit('trade_signal', {
-        ...signal,
-        userId
-      });
-    }
-    
-    // Analyze signals for consensus
-    const consensus = consensusService.analyzeSignals(this.signalWindow[symbol]);
-    
-    // If we have consensus, create consensus signal and execute it
-    if (consensus) {
-      const consensusSignal = consensusService.createConsensusSignal(consensus, symbol, currentPrice);
-      if (consensusSignal) {
-        const consensusKey = `${symbol}-CONSENSUS-${consensusSignal.action}`;
+      if (candle.isClosed) {
+        // Save candle to database
+        await MarketData.saveCandle(symbol, interval, candle);
         
-        // Avoid repeated consensus signals
-        if (this.lastSignals.has(consensusKey)) {
-          const lastTime = this.lastSignals.get(consensusKey);
-          if (consensusSignal.time - lastTime < 30 * 60 * 1000) {
-            return; // Skip consensus signal if given recently
+        // Get the latest candles (at least 50)
+        const cachedCandles = await MarketData.getCandles(symbol, interval, 100);
+        
+        // If not enough candles in cache, request more
+        let candles = cachedCandles;
+        if (candles.length < 50) {
+          const historicalCandles = await binanceService.getHistoricalCandles(symbol, interval, 100);
+          candles = historicalCandles;
+          
+          // Save historical candles to database
+          for (const histCandle of historicalCandles) {
+            await MarketData.saveCandle(symbol, interval, histCandle);
           }
         }
         
-        this.lastSignals.set(consensusKey, consensusSignal.time);
+        // Calculate indicators
+        const indicators = indicatorsService.calculateIndicators(candles);
         
-        console.log(`Emitting consensus signal: ${consensusSignal.action} for ${symbol}`);
+        // Check for trading signals
+        const signals = indicatorsService.checkTradingSignals(symbol, candles, indicators);
         
-        // Emit consensus signal
+        // Process new signals
+        if (signals.length > 0) {
+          console.log(`Processing ${signals.length} new signals for ${symbol}`);
+          await this.processSignals(symbol, signals, userId);
+        }
+        
+        // Emit the indicators update event
+        this.emit('indicators_update', {
+          symbol,
+          userId,
+          indicators,
+          time: candle.time
+        });
+      }
+      
+      // Save current price to database
+      await MarketData.savePrice(symbol, candle.close);
+      
+      // Emit the price update event
+      this.emit('price_update', {
+        symbol,
+        userId,
+        price: candle.close,
+        time: candle.time,
+        candle
+      });
+    } catch (error) {
+      console.error(`Error in update callback for ${symbol}:`, error);
+    }
+  }
+  
+  // Process trading signals
+  async processSignals(symbol, signals, userId) {
+    if (!signals || signals.length === 0) return;
+    
+    try {
+      // Add signals to database
+      for (const signal of signals) {
+        // Add userId to the signal
+        signal.userId = userId;
+        
+        // Create a new Signal object and save to database
+        const newSignal = new Signal(signal);
+        await newSignal.save();
+        
+        // Emit trading signal (for display, not execution)
         this.emit('trade_signal', {
-          ...consensusSignal,
+          ...signal,
           userId
         });
-        
-        // Execute trade based on consensus signal
-        this.executeTrade(consensusSignal, userId);
       }
+      
+      // Get recent signals from database (last 15 minutes)
+      const fifteenMinutesAgo = Date.now() - 15 * 60 * 1000;
+      const recentSignals = await Signal.find({
+        symbol,
+        userId,
+        time: { $gte: fifteenMinutesAgo }
+      });
+      
+      // Get the current price from the most recent signal
+      const currentPrice = signals[0].price;
+      
+      // Analyze signals for consensus
+      const consensus = consensusService.analyzeSignals(recentSignals);
+      
+      // If we have consensus, create consensus signal and execute it
+      if (consensus) {
+        const consensusSignal = consensusService.createConsensusSignal(consensus, symbol, currentPrice);
+        
+        if (consensusSignal) {
+          // Add userId to consensus signal
+          consensusSignal.userId = userId;
+          
+          // Check for recent duplicate consensus signals
+          const thirtyMinutesAgo = Date.now() - 30 * 60 * 1000;
+          const recentConsensusSignals = await Signal.find({
+            symbol,
+            userId,
+            indicator: 'CONSENSUS',
+            action: consensusSignal.action,
+            time: { $gte: thirtyMinutesAgo }
+          });
+          
+          if (recentConsensusSignals.length === 0) {
+            // Save consensus signal to database
+            const newConsensusSignal = new Signal(consensusSignal);
+            await newConsensusSignal.save();
+            
+            console.log(`Emitting consensus signal: ${consensusSignal.action} for ${symbol}`);
+            
+            // Emit consensus signal
+            this.emit('trade_signal', {
+              ...consensusSignal,
+              userId
+            });
+            
+            // Execute trade based on consensus signal
+            this.executeTrade(consensusSignal, userId);
+          } else {
+            console.log(`Skipping duplicate consensus ${consensusSignal.action} signal for ${symbol}`);
+          }
+        }
+      }
+    } catch (error) {
+      console.error(`Error processing signals for ${symbol}:`, error);
     }
   }
   
@@ -278,31 +327,111 @@ class TradingBot extends EventEmitter {
   }
   
   // Get active symbols being monitored
-  getActiveSymbols(userId = null) {
-    const result = [];
-    
-    for (const [botKey, botData] of this.activeSymbols.entries()) {
-      if (!userId || botData.userId === userId) {
-        result.push({
-          symbol: botData.symbol,
-          interval: botData.interval,
-          userId: botData.userId,
-          startTime: botData.startTime,
-          uptime: Date.now() - botData.startTime
-        });
-      }
+  async getActiveSymbols(userId = null) {
+    try {
+      const query = userId ? { userId, active: true } : { active: true };
+      const activeBots = await ActiveBot.find(query);
+      
+      return activeBots.map(bot => ({
+        symbol: bot.symbol,
+        interval: bot.interval,
+        userId: bot.userId,
+        startTime: bot.startTime,
+        uptime: Date.now() - bot.startTime
+      }));
+    } catch (error) {
+      console.error('Error getting active symbols:', error);
+      return [];
     }
-    
-    return result;
   }
   
   // Get bot status
-  getStatus() {
-    return {
-      isRunning: this.isRunning,
-      activeSymbolsCount: this.activeSymbols.size,
-      activeSymbols: Array.from(this.activeSymbols.keys())
-    };
+  async getStatus() {
+    try {
+      const activeBots = await ActiveBot.find({ active: true });
+      
+      return {
+        isRunning: activeBots.length > 0,
+        activeSymbolsCount: activeBots.length,
+        activeSymbols: activeBots.map(bot => `${bot.symbol}-${bot.interval}-${bot.userId}`)
+      };
+    } catch (error) {
+      console.error('Error getting bot status:', error);
+      return {
+        isRunning: this.isRunning,
+        activeSymbolsCount: 0,
+        activeSymbols: []
+      };
+    }
+  }
+  
+  // Restore active bots from database after restart
+  async restoreActiveBots() {
+    try {
+      const activeBots = await ActiveBot.find({ active: true });
+      
+      if (activeBots.length === 0) {
+        console.log('No active bots to restore');
+        return 0;
+      }
+      
+      console.log(`Found ${activeBots.length} active bots to restore`);
+      
+      for (const bot of activeBots) {
+        console.log(`Restoring bot for ${bot.symbol} (${bot.interval})`);
+        
+        try {
+          // Re-subscribe to updates
+          await this.startMonitoring(bot.symbol, bot.interval, bot.userId);
+        } catch (error) {
+          console.error(`Error restoring bot for ${bot.symbol}:`, error);
+          
+          // Mark bot as inactive if we couldn't restore it
+          bot.active = false;
+          bot.stopTime = Date.now();
+          await bot.save();
+        }
+      }
+      
+      // Re-check active bots after restoration attempts
+      const stillActive = await ActiveBot.find({ active: true });
+      this.isRunning = stillActive.length > 0;
+      
+      return stillActive.length;
+    } catch (error) {
+      console.error('Error restoring active bots:', error);
+      return 0;
+    }
+  }
+  
+  // Set up periodic cleanup of old data
+  setupCleanupTasks() {
+    // Clean up signals once a day
+    setInterval(async () => {
+      try {
+        await Signal.cleanup(30 * 24 * 60 * 60 * 1000); // 30 days
+      } catch (error) {
+        console.error('Error in signal cleanup task:', error);
+      }
+    }, 24 * 60 * 60 * 1000); // Run once a day
+    
+    // Clean up market data once a day
+    setInterval(async () => {
+      try {
+        await MarketData.cleanup();
+      } catch (error) {
+        console.error('Error in market data cleanup task:', error);
+      }
+    }, 24 * 60 * 60 * 1000); // Run once a day
+    
+    // Clean up inactive bots once a day
+    setInterval(async () => {
+      try {
+        await ActiveBot.cleanup(7 * 24 * 60 * 60 * 1000); // 7 days
+      } catch (error) {
+        console.error('Error in active bot cleanup task:', error);
+      }
+    }, 24 * 60 * 60 * 1000); // Run once a day
   }
   
   // Load settings from configuration database
