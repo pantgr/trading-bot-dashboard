@@ -1,4 +1,4 @@
-// src/pages/Dashboard.js - Προσθήκη κουμπιού ρυθμίσεων
+// src/pages/Dashboard.js - Cleaned version
 import React, { useState, useEffect } from 'react';
 import TradingBotPanel from '../components/TradingBotPanel';
 import BotSettingsPanel from '../components/BotSettingsPanel';
@@ -14,20 +14,20 @@ const Dashboard = () => {
   const [isSettingsPanelOpen, setIsSettingsPanelOpen] = useState(false);
 
   useEffect(() => {
-    // Φόρτωση αρχικών δεδομένων
+    // Load initial data
     const fetchData = async () => {
       try {
-        // Λήψη της τιμής του BTC σε USD για μετατροπές
+        // Get BTC price in USD for conversions
         const btcPriceRes = await axios.get('/api/market-data/price/BTCUSDT');
         if (btcPriceRes.data && btcPriceRes.data.price) {
           setBtcPrice(btcPriceRes.data.price);
         }
         
-        // Λήψη χαρτοφυλακίου από το API
+        // Get portfolio from API
         const portfolioRes = await axios.get('/api/virtual-trade/portfolio');
         setPortfolio(portfolioRes.data);
         
-        // Λήψη ιστορικού συναλλαγών από το API
+        // Get transaction history from API
         const txRes = await axios.get('/api/virtual-trade/history');
         setTransactions(txRes.data);
         
@@ -40,29 +40,27 @@ const Dashboard = () => {
     
     fetchData();
     
-    // Σύνδεση με WebSocket
+    // Connect to WebSocket
     const socket = connectSocket();
     
-    // Ακρόαση για ενημερώσεις χαρτοφυλακίου
+    // Listen for portfolio updates
     socket.on('portfolio_update', (updatedPortfolio) => {
-      console.log('Received portfolio update:', updatedPortfolio);
       setPortfolio(updatedPortfolio);
     });
     
-    // Ακρόαση για νέες συναλλαγές
+    // Listen for new transactions
     socket.on('transaction_created', (newTx) => {
-      console.log('Received new transaction:', newTx);
       setTransactions(prev => [newTx, ...prev]);
     });
     
-    // Ακρόαση για ενημερώσεις τιμής BTC
+    // Listen for BTC price updates
     socket.on('price_update', (data) => {
       if (data.symbol === 'BTCUSDT') {
         setBtcPrice(data.price);
       }
     });
     
-    // Καθαρισμός κατά την αποσύνδεση
+    // Cleanup on unmount
     return () => {
       socket.off('portfolio_update');
       socket.off('transaction_created');
@@ -70,13 +68,13 @@ const Dashboard = () => {
     };
   }, []);
 
-  // Μετατροπή USD σε BTC
+  // Convert USD to BTC
   const usdToBtc = (usdAmount) => {
     if (!btcPrice || !usdAmount) return 0;
     return usdAmount / btcPrice;
   };
 
-  // Μορφοποίηση των τιμών BTC
+  // Format BTC values
   const formatBtcValue = (btcValue) => {
     return btcValue ? `₿${btcValue.toFixed(8)}` : '₿0.00000000';
   };
@@ -93,11 +91,11 @@ const Dashboard = () => {
           className="settings-button"
           onClick={() => setIsSettingsPanelOpen(true)}
         >
-          <i className="fas fa-cog"></i> Ρυθμίσεις Bot
+          <i className="fas fa-cog"></i> Bot Settings
         </button>
       </div>
       
-      {/* Panel ρυθμίσεων Bot */}
+      {/* Bot Settings Panel */}
       <BotSettingsPanel 
         isOpen={isSettingsPanelOpen} 
         onClose={() => setIsSettingsPanelOpen(false)} 
@@ -159,7 +157,7 @@ const Dashboard = () => {
                   </thead>
                   <tbody>
                     {portfolio.assets.map((asset, index) => {
-                      // Υπολογισμός τιμών σε BTC αν πρόκειται για ζεύγος με USDT
+                      // Calculate BTC values for USDT pairs
                       const priceBTC = asset.symbol.endsWith('USDT') 
                         ? asset.currentPrice / btcPrice 
                         : asset.currentPrice;
@@ -172,7 +170,7 @@ const Dashboard = () => {
                       const pnl = value - cost;
                       const pnlPercentage = (pnl / cost) * 100;
                       
-                      // Αλλάζουμε την εμφάνιση του συμβόλου αν είναι σε BTC
+                      // Adjust symbol display for BTC pairs
                       const displaySymbol = asset.symbol.replace('USDT', '');
                       
                       return (
@@ -215,7 +213,7 @@ const Dashboard = () => {
                 </thead>
                 <tbody>
                   {transactions.map((tx, index) => {
-                    // Μετατροπή τιμών σε BTC αν χρειάζεται
+                    // Convert to BTC if needed
                     const priceBTC = tx.symbol.endsWith('USDT') 
                       ? tx.price / (btcPrice || 1) 
                       : tx.price;
@@ -223,7 +221,7 @@ const Dashboard = () => {
                       ? Math.abs(tx.value) / (btcPrice || 1)
                       : Math.abs(tx.value);
                     
-                    // Αλλαγή εμφάνισης συμβόλου
+                    // Change symbol display
                     const displaySymbol = tx.symbol.replace('USDT', '');
                     
                     return (

@@ -1,4 +1,4 @@
-// src/components/CandlestickChartApex.js - Updated with currency formatting
+// src/components/CandlestickChartApex.js - Cleaned version
 import React, { useState, useEffect, useRef } from 'react';
 import ReactApexChart from 'react-apexcharts';
 import { connectSocket } from '../services/socketService';
@@ -11,7 +11,7 @@ const CandlestickChartApex = ({ symbol, interval = '5m' }) => {
   const isSubscribedRef = useRef(false);
   const signalsRef = useRef([]);
   const signalUpdateTimeoutRef = useRef(null);
-  const isInitializedRef = useRef(false); // Track initialization
+  const isInitializedRef = useRef(false);
   
   const [series, setSeries] = useState([{
     name: 'candle',
@@ -337,7 +337,6 @@ const CandlestickChartApex = ({ symbol, interval = '5m' }) => {
   useEffect(() => {
     // Only connect socket once
     if (!isInitializedRef.current) {
-      console.log('Connecting to socket (one-time)');
       socketRef.current = connectSocket();
       isInitializedRef.current = true;
     }
@@ -386,8 +385,6 @@ const CandlestickChartApex = ({ symbol, interval = '5m' }) => {
     // Function to handle historical data
     const handleHistoricalData = (data) => {
       if (data.symbol === symbol && data.interval === interval) {
-        console.log(`Received historical data for ${symbol}: ${data.data.length} candles`);
-        
         const formattedCandles = formatCandleData(data.data);
         const formattedVolume = formatVolumeData(data.data);
         
@@ -473,8 +470,6 @@ const CandlestickChartApex = ({ symbol, interval = '5m' }) => {
     // Function to handle trade signals
     const handleTradeSignal = (signal) => {
       if (signal.symbol === symbol) {
-        console.log(`Received signal for ${symbol}: ${signal.action} (${signal.indicator})`);
-        
         // Update our ref immediately
         const newSignals = [...signalsRef.current, signal];
         signalsRef.current = newSignals;
@@ -493,7 +488,6 @@ const CandlestickChartApex = ({ symbol, interval = '5m' }) => {
     
     // Clean up previous subscription if needed
     if (isSubscribedRef.current) {
-      console.log(`Unsubscribing from previous market data`);
       socket.emit('unsubscribe_market', { symbol, interval });
       
       // Remove previous listeners
@@ -505,7 +499,6 @@ const CandlestickChartApex = ({ symbol, interval = '5m' }) => {
     }
     
     // Subscribe to new market data
-    console.log(`Subscribing to market data for ${symbol} (${interval})`);
     socket.emit('subscribe_market', { symbol, interval });
     isSubscribedRef.current = true;
     
@@ -516,8 +509,6 @@ const CandlestickChartApex = ({ symbol, interval = '5m' }) => {
     
     // Cleanup function
     return () => {
-      console.log(`Removing event listeners for ${symbol} (${interval})`);
-      
       // Clear debounce timeout
       if (signalUpdateTimeoutRef.current) {
         clearTimeout(signalUpdateTimeoutRef.current);

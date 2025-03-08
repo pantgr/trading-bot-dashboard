@@ -3,8 +3,9 @@ const express = require('express');
 const router = express.Router();
 const consensusService = require('../services/consensusService');
 const tradingBot = require('../services/tradingBotService');
+const configService = require('../services/configService');
 
-// Αποθήκευση των ρυθμίσεων στη μνήμη (θα μπορούσε να αποθηκευτεί στη βάση δεδομένων)
+// Αποθήκευση των ρυθμίσεων στη μνήμη (φόρτωση από τη βάση δεδομένων)
 let botSettings = {
   signalScores: { ...consensusService.SIGNAL_SCORES },
   thresholds: {
@@ -25,6 +26,57 @@ let botSettings = {
   }
 };
 
+// Load settings from database on startup
+(async () => {
+  try {
+    console.log('Loading bot settings from database...');
+    const dbSettings = await configService.getSettings('default');
+    
+    if (dbSettings && Object.keys(dbSettings).length > 0) {
+      console.log('Found settings in database, using them instead of defaults');
+      console.log('Database settings:', JSON.stringify(dbSettings));
+      
+      // Save a backup of default settings
+      const defaultSettings = { ...botSettings };
+      
+      // Update with database settings
+      botSettings = dbSettings;
+      
+      // Update consensus service with loaded settings
+      if (botSettings.signalScores) {
+        Object.keys(botSettings.signalScores).forEach(key => {
+          if (consensusService.SIGNAL_SCORES.hasOwnProperty(key)) {
+            consensusService.SIGNAL_SCORES[key] = botSettings.signalScores[key];
+          }
+        });
+      }
+      
+      if (botSettings.thresholds) {
+        if (botSettings.thresholds.BUY_THRESHOLD !== undefined) {
+          consensusService.BUY_THRESHOLD = botSettings.thresholds.BUY_THRESHOLD;
+        }
+        
+        if (botSettings.thresholds.SELL_THRESHOLD !== undefined) {
+          consensusService.SELL_THRESHOLD = botSettings.thresholds.SELL_THRESHOLD;
+        }
+        
+        if (botSettings.thresholds.TIME_WINDOW_MS !== undefined) {
+          consensusService.TIME_WINDOW_MS = botSettings.thresholds.TIME_WINDOW_MS;
+        }
+      }
+      
+      console.log('Successfully loaded settings from database');
+    } else {
+      console.log('No valid settings found in database, using defaults');
+      // Save default settings to database
+      await configService.saveSettings(botSettings, 'default');
+      console.log('Default settings saved to database');
+    }
+  } catch (error) {
+    console.error('Error loading settings from database:', error);
+  }
+})();
+
 // GET /api/bot/settings
 router.get('/settings', (req, res) => {
   try {
@@ -37,7 +89,7 @@ router.get('/settings', (req, res) => {
 });
 
 // POST /api/bot/settings
-router.post('/settings', (req, res) => {
+router.post('/settings', async (req, res) => {
   try {
     const { signalScores, thresholds, indicators, moneyManagement } = req.body;
 
@@ -83,6 +135,15 @@ router.post('/settings', (req, res) => {
     }
 
     console.log('Bot settings updated:', botSettings);
+    
+    // Save updated settings to database
+    try {
+      await configService.saveSettings(botSettings, 'default');
+      console.log('Settings successfully saved to database');
+    } catch (dbError) {
+      console.error('Error saving settings to database:', dbError);
+      // Continue even if database save fails
+    }
     
     // Ενημέρωση των ενεργών bot για τις αλλαγές ρυθμίσεων
     tradingBot.emit('settings_updated', botSettings);

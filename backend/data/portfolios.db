@@ -1,1 +1,1 @@
-{"userId":"default","balance":8000,"assets":[{"symbol":"PROSUSDT","quantity":2986.411826190832,"averagePrice":0.6697,"currentPrice":0.6261}],"equity":9869.79244437808,"createdAt":1741437807302,"updatedAt":{"$$date":1741437920318},"_id":"poJjpxg19cIGhmQN"}
+{"userId":"default","balance":7200,"assets":[{"symbol":"PROSUSDT","quantity":4272.172031912465,"averagePrice":0.6554043187129246,"currentPrice":0.6222,"btcPrice":0.000007201388055394901}],"equity":9858.145438255935,"createdAt":1741437807302,"updatedAt":{"$$date":1741445220254},"_id":"poJjpxg19cIGhmQN"}

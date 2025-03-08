@@ -1,50 +1,26 @@
-// src/components/TradingBotPanel.js - Updated with all trading pairs
+// src/components/TradingBotPanel.js - Complete version with table layout
 import React, { useState, useEffect } from 'react';
 import { connectSocket, startBot, stopBot } from '../services/socketService';
 import CandlestickChartApex from './CandlestickChartApex';
 import axios from 'axios';
 
 const TradingBotPanel = () => {
-  const [symbol, setSymbol] = useState('ETHBTC'); // Default symbol
+  const [symbol, setSymbol] = useState('ETHBTC');
   const [interval, setInterval] = useState('1m');
   const [isRunning, setIsRunning] = useState(false);
   const [signals, setSignals] = useState([]);
   const [lastPrice, setLastPrice] = useState(null);
   const [indicators, setIndicators] = useState(null);
   const [isLoading, setIsLoading] = useState(true);
-  const [debugInfo, setDebugInfo] = useState({ socketEvents: [] });
-  
-  // State for available symbols
   const [availableSymbols, setAvailableSymbols] = useState([]);
   const [groupedSymbols, setGroupedSymbols] = useState({});
   const [isLoadingSymbols, setIsLoadingSymbols] = useState(true);
-  
-  // State for quote asset filter
   const [selectedQuoteAsset, setSelectedQuoteAsset] = useState('ALL');
   const [quoteAssets, setQuoteAssets] = useState([]);
 
   // Connect to socket once when component mounts
   useEffect(() => {
-    console.log('TradingBotPanel: Initializing socket connection');
-    const socket = connectSocket();
-    
-    // Listen for general events for debugging
-    const handleAnyEvent = (event, ...args) => {
-      console.log(`[Component received] ${event}:`, args);
-      setDebugInfo(prev => ({
-        ...prev,
-        socketEvents: [{ time: new Date().toLocaleTimeString(), event, args }, ...prev.socketEvents].slice(0, 20)
-      }));
-    };
-    
-    socket.onAny(handleAnyEvent);
-    
-    // Send a ping to check connection
-    socket.emit('ping', { time: Date.now() });
-    
-    return () => {
-      socket.offAny(handleAnyEvent);
-    };
+    connectSocket();
   }, []);
 
   // Fetch available trading pairs from Binance
@@ -57,7 +33,6 @@ const TradingBotPanel = () => {
         // Filter for active trading pairs only
         const activePairs = response.data.filter(pair => pair.status === 'TRADING');
         
-        console.log(`Found ${activePairs.length} active trading pairs`);
         setAvailableSymbols(activePairs);
         
         // Extract unique quote assets
@@ -92,7 +67,6 @@ const TradingBotPanel = () => {
 
   // Setup data and event listeners when symbol changes
   useEffect(() => {
-    console.log(`TradingBotPanel: Setting up for symbol ${symbol}`);
     setIsLoading(true);
     
     const socket = connectSocket();
@@ -103,7 +77,6 @@ const TradingBotPanel = () => {
         const response = await axios.get(`/api/market-data/price/${symbol}`);
         if (response.data && response.data.price) {
           setLastPrice(response.data.price);
-          console.log(`Initial price fetched for ${symbol}: ${response.data.price}`);
         }
         setIsLoading(false);
       } catch (error) {
@@ -123,7 +96,6 @@ const TradingBotPanel = () => {
     
     const handleIndicatorsUpdate = (data) => {
       if (data.symbol === symbol) {
-        console.log('Received indicators update:', data.indicators);
         setIndicators(data.indicators?.current || null);
       }
     };
@@ -141,11 +113,7 @@ const TradingBotPanel = () => {
     };
     
     const handleTradeSignal = (signal) => {
-      console.log(`[Component] Trade signal received: ${signal.action} ${signal.symbol} (${signal.indicator})`);
-      
       if (signal.symbol === symbol) {
-        console.log(`Signal matches current symbol ${symbol} - adding to display`);
-        
         setSignals(prev => {
           // Check if we already have this signal
           const isDuplicate = prev.some(
@@ -156,15 +124,11 @@ const TradingBotPanel = () => {
           
           if (!isDuplicate) {
             const newSignals = [signal, ...prev].slice(0, 20);
-            console.log(`Updated signals (${newSignals.length}):`, newSignals);
             return newSignals;
           }
           
-          console.log('Duplicate signal - ignoring');
           return prev;
         });
-      } else {
-        console.log(`Signal for ${signal.symbol} doesn't match ${symbol} - ignoring`);
       }
     };
     
@@ -179,7 +143,6 @@ const TradingBotPanel = () => {
     setSignals([]);
     
     return () => {
-      console.log(`Cleaning up listeners for ${symbol}`);
       socket.off('price_update', handlePriceUpdate);
       socket.off('indicators_update', handleIndicatorsUpdate);
       socket.off('bot_started', handleBotStarted);
@@ -269,105 +232,219 @@ const TradingBotPanel = () => {
     }
   };
 
+  // Style for all controls - making them exactly the same height
+  const controlHeight = "42px";
+
   return (
     <div className="trading-bot-panel">
       <div className="bot-controls">
         <h2>Trading Bot Controls</h2>
-        <div className="control-row">
-          {/* Quote Asset Filter */}
-          <div className="form-group">
-            <label>Quote Asset:</label>
-            {isLoadingSymbols ? (
-              <div className="loading-indicator">Loading...</div>
-            ) : (
-              <select 
-                value={selectedQuoteAsset} 
-                onChange={handleQuoteAssetChange}
-                disabled={isRunning}
-                className="quote-asset-select"
-              >
-                {quoteAssets.map(quote => (
-                  <option key={quote} value={quote}>
-                    {quote === 'ALL' ? 'All Assets' : quote}
-                  </option>
-                ))}
-              </select>
-            )}
-          </div>
-          
-          {/* Symbol Selection */}
-          <div className="form-group">
-            <label>Symbol:</label>
-            {isLoadingSymbols ? (
-              <div className="loading-indicator">Loading available pairs...</div>
-            ) : (
-              <select 
-                value={symbol} 
-                onChange={handleSymbolChange}
-                disabled={isRunning}
-                className="symbol-select"
-              >
-                {getFilteredSymbols().map(([quoteAsset, symbols]) => (
-                  <optgroup key={quoteAsset} label={`${quoteAsset} Pairs`}>
-                    {symbols.map(pair => (
-                      <option key={pair.symbol} value={pair.symbol}>
-                        {pair.baseAsset}/{pair.quoteAsset}
-                      </option>
-                    ))}
-                  </optgroup>
-                ))}
-              </select>
-            )}
-          </div>
-          
-          <div className="form-group">
-            <label>Interval:</label>
-            <select 
-              value={interval} 
-              onChange={handleIntervalChange}
-              disabled={isRunning}
-            >
-              <option value="1m">1 minute</option>
-              <option value="5m">5 minutes</option>
-              <option value="15m">15 minutes</option>
-              <option value="1h">1 hour</option>
-              <option value="4h">4 hours</option>
-              <option value="1d">1 day</option>
-            </select>
-          </div>
-          
-          <div className="form-group">
-            <label>Bot Status:</label>
-            <div className={`status-indicator ${isRunning ? 'running' : 'stopped'}`}>
-              {isRunning ? 'RUNNING' : 'STOPPED'}
-            </div>
-          </div>
-          
-          <div className="form-group">
-            <label>Current Price:</label>
-            <div className="price-display">
-              {isLoading ? 'Loading...' : formatPrice(lastPrice)}
-            </div>
-          </div>
+        
+        {/* TABLE LAYOUT FOR CONTROLS */}
+        <table style={{ width: '100%', borderCollapse: 'separate', borderSpacing: '15px 0', marginBottom: '15px' }}>
+          <tbody>
+            <tr>
+              <td style={{ width: '20%', verticalAlign: 'bottom', padding: '0' }}>
+                <div>
+                  <div style={{ marginBottom: '8px', fontWeight: '500', fontSize: '14px' }}>Quote Asset:</div>
+                  {isLoadingSymbols ? (
+                    <div style={{ 
+                      height: controlHeight, 
+                      lineHeight: controlHeight, 
+                      backgroundColor: '#f7fafc', 
+                      padding: '0 10px', 
+                      borderRadius: '4px' 
+                    }}>Loading...</div>
+                  ) : (
+                    <select 
+                      value={selectedQuoteAsset} 
+                      onChange={handleQuoteAssetChange}
+                      disabled={isRunning}
+                      style={{ 
+                        height: controlHeight, 
+                        width: '100%', 
+                        padding: '0 10px',
+                        border: '1px solid #ccc',
+                        borderRadius: '4px',
+                        boxSizing: 'border-box'
+                      }}
+                    >
+                      {quoteAssets.map(quote => (
+                        <option key={quote} value={quote}>
+                          {quote === 'ALL' ? 'All Assets' : quote}
+                        </option>
+                      ))}
+                    </select>
+                  )}
+                </div>
+              </td>
+              
+              <td style={{ width: '20%', verticalAlign: 'bottom', padding: '0' }}>
+                <div>
+                  <div style={{ marginBottom: '8px', fontWeight: '500', fontSize: '14px' }}>Symbol:</div>
+                  {isLoadingSymbols ? (
+                    <div style={{ 
+                      height: controlHeight, 
+                      lineHeight: controlHeight, 
+                      backgroundColor: '#f7fafc', 
+                      padding: '0 10px', 
+                      borderRadius: '4px' 
+                    }}>Loading pairs...</div>
+                  ) : (
+                    <select 
+                      value={symbol} 
+                      onChange={handleSymbolChange}
+                      disabled={isRunning}
+                      style={{ 
+                        height: controlHeight, 
+                        width: '100%', 
+                        padding: '0 10px',
+                        border: '1px solid #ccc',
+                        borderRadius: '4px',
+                        boxSizing: 'border-box'
+                      }}
+                    >
+                      {getFilteredSymbols().map(([quoteAsset, symbols]) => (
+                        <optgroup key={quoteAsset} label={`${quoteAsset} Pairs`}>
+                          {symbols.map(pair => (
+                            <option key={pair.symbol} value={pair.symbol}>
+                              {pair.baseAsset}/{pair.quoteAsset}
+                            </option>
+                          ))}
+                        </optgroup>
+                      ))}
+                    </select>
+                  )}
+                </div>
+              </td>
+              
+              <td style={{ width: '20%', verticalAlign: 'bottom', padding: '0' }}>
+                <div>
+                  <div style={{ marginBottom: '8px', fontWeight: '500', fontSize: '14px' }}>Interval:</div>
+                  <select 
+                    value={interval} 
+                    onChange={handleIntervalChange}
+                    disabled={isRunning}
+                    style={{ 
+                      height: controlHeight, 
+                      width: '100%', 
+                      padding: '0 10px',
+                      border: '1px solid #ccc',
+                      borderRadius: '4px',
+                      boxSizing: 'border-box'
+                    }}
+                  >
+                    <option value="1m">1 minute</option>
+                    <option value="5m">5 minutes</option>
+                    <option value="15m">15 minutes</option>
+                    <option value="1h">1 hour</option>
+                    <option value="4h">4 hours</option>
+                    <option value="1d">1 day</option>
+                  </select>
+                </div>
+              </td>
+              
+              <td style={{ width: '20%', verticalAlign: 'bottom', padding: '0' }}>
+                <div>
+                  <div style={{ marginBottom: '8px', fontWeight: '500', fontSize: '14px' }}>Bot Status:</div>
+                  <div style={{ 
+                    height: controlHeight, 
+                    lineHeight: controlHeight, 
+                    textAlign: 'center',
+                    backgroundColor: isRunning ? '#48bb78' : '#f56565',
+                    color: 'white',
+                    fontWeight: 'bold',
+                    borderRadius: '4px',
+                    boxSizing: 'border-box'
+                  }}>
+                    {isRunning ? 'RUNNING' : 'STOPPED'}
+                  </div>
+                </div>
+              </td>
+              
+              <td style={{ width: '20%', verticalAlign: 'bottom', padding: '0' }}>
+                <div>
+                  <div style={{ marginBottom: '8px', fontWeight: '500', fontSize: '14px' }}>Current Price:</div>
+                  <div style={{ 
+                    height: controlHeight, 
+                    lineHeight: controlHeight, 
+                    backgroundColor: '#f7fafc', 
+                    padding: '0 10px', 
+                    borderRadius: '4px',
+                    borderLeft: '4px solid #4299e1',
+                    fontFamily: 'monospace',
+                    fontWeight: 'bold',
+                    boxSizing: 'border-box'
+                  }}>
+                    {isLoading ? 'Loading...' : formatPrice(lastPrice)}
+                  </div>
+                </div>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+        
+        {/* Selected Pair Info */}
+        <div style={{
+          backgroundColor: '#f8fafc',
+          borderRadius: '6px',
+          padding: '12px 15px',
+          marginBottom: '15px',
+          borderLeft: '4px solid #3182ce'
+        }}>
+          <p style={{
+            margin: 0,
+            color: '#2d3748',
+            fontSize: '15px'
+          }}>Selected pair: <strong>{getSymbolDisplayName(symbol)}</strong></p>
         </div>
         
-        <div className="selected-pair-info">
-          <p>Selected pair: <strong>{getSymbolDisplayName(symbol)}</strong></p>
-        </div>
-        
-        <div className="button-row">
+        {/* Button Row */}
+        <div style={{
+          display: 'flex',
+          justifyContent: 'center',
+          marginTop: '20px'
+        }}>
           {!isRunning ? (
             <button 
-              className="start-button" 
               onClick={handleStartBot}
               disabled={isLoadingSymbols}
+              style={{
+                height: '44px',
+                padding: '0 24px',
+                fontSize: '16px',
+                fontWeight: 'bold',
+                border: 'none',
+                borderRadius: '8px',
+                cursor: 'pointer',
+                minWidth: '180px',
+                backgroundColor: '#48bb78',
+                color: 'white',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center'
+              }}
             >
               Start Bot
             </button>
           ) : (
             <button 
-              className="stop-button" 
               onClick={handleStopBot}
+              style={{
+                height: '44px',
+                padding: '0 24px',
+                fontSize: '16px',
+                fontWeight: 'bold',
+                border: 'none',
+                borderRadius: '8px',
+                cursor: 'pointer',
+                minWidth: '180px',
+                backgroundColor: '#f56565',
+                color: 'white',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center'
+              }}
             >
               Stop Bot
             </button>
@@ -375,12 +452,12 @@ const TradingBotPanel = () => {
         </div>
       </div>
       
-      {/* Candlestick Chart */}
+      {/* Chart */}
       <div className="chart-section">
         <CandlestickChartApex symbol={symbol} interval={interval} />
       </div>
       
-      {/* Indicators with improved error handling and debugging */}
+      {/* Indicators panel */}
       {indicators ? (
         <div className="indicators-panel">
           <h3>Technical Indicators</h3>
@@ -426,14 +503,6 @@ const TradingBotPanel = () => {
               </div>
             )}
           </div>
-
-          {/* Debug info */}
-          <details style={{ marginTop: '10px', fontSize: '12px', color: '#666' }}>
-            <summary>Debug Indicators</summary>
-            <pre style={{ whiteSpace: 'pre-wrap', maxHeight: '200px', overflow: 'auto' }}>
-              {JSON.stringify(indicators, null, 2)}
-            </pre>
-          </details>
         </div>
       ) : (
         <div className="indicators-panel">
@@ -442,7 +511,7 @@ const TradingBotPanel = () => {
         </div>
       )}
       
-      {/* Trading Signals Panel with Debug Info */}
+      {/* Signals panel */}
       <div className="signals-panel">
         <h3>Trading Signals {signals.length > 0 ? `(${signals.length})` : ''}</h3>
         {signals.length > 0 ? (
@@ -507,29 +576,6 @@ const TradingBotPanel = () => {
         ) : (
           <p className="no-signals">No signals detected yet</p>
         )}
-      </div>
-      
-      {/* Debug Panel */}
-      <div style={{marginTop: '20px', padding: '10px', backgroundColor: '#f8f9fa', borderRadius: '4px'}}>
-        <details>
-          <summary style={{cursor: 'pointer', fontWeight: 'bold'}}>Debug Information</summary>
-          <div>
-            <p>Current Symbol: {isLoadingSymbols ? 'Loading...' : getSymbolDisplayName(symbol)}</p>
-            <p>Interval: {interval}</p>
-            <p>Bot Running: {isRunning ? 'Yes' : 'No'}</p>
-            <p>Signals Count: {signals.length}</p>
-            <p>Available Trading Pairs: {availableSymbols.length}</p>
-            <p>Available Quote Assets: {quoteAssets.length > 0 ? quoteAssets.join(', ') : 'Loading...'}</p>
-            <p>Socket Events Received:</p>
-            <ul style={{maxHeight: '200px', overflow: 'auto', fontSize: '12px'}}>
-              {debugInfo.socketEvents.map((event, i) => (
-                <li key={i}>
-                  {event.time}: {event.event}
-                </li>
-              ))}
-            </ul>
-          </div>
-        </details>
       </div>
     </div>
   );
