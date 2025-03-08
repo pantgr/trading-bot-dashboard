@@ -1,9 +1,4 @@
-// Διορθώσεις στο socketService.js
-// Ανοίξτε το αρχείο: frontend/src/services/socketService.js
-
-// Αντικαταστήστε ολόκληρο το αρχείο με αυτό:
-
-// src/services/socketService.js
+// src/services/socketService.js - Updated to better support BTC/USDT
 import { io } from 'socket.io-client';
 
 const SOCKET_URL = '/';
@@ -21,6 +16,9 @@ export const connectSocket = () => {
     
     socket.on('connect', () => {
       console.log('Connected to WebSocket server');
+      
+      // Automatically subscribe to BTCUSDT for global price tracking
+      socket.emit('subscribe_market', { symbol: 'BTCUSDT', interval: '1m' });
     });
     
     socket.on('disconnect', () => {
@@ -39,6 +37,11 @@ export const connectSocket = () => {
     // Παρακολούθηση όλων των trade signals για εύκολο debugging
     socket.on('trade_signal', (signal) => {
       console.log(`[socketService] Received trade signal: ${signal.action} ${signal.symbol} (${signal.indicator})`);
+    });
+    
+    // Listen for BTC price updates globally
+    socket.on('btc_price_update', (data) => {
+      console.log(`[socketService] BTC price update: $${data.price}`);
     });
   } else {
     console.log('Using existing socket connection');
@@ -70,6 +73,9 @@ export const startBot = (symbol, interval = '5m', userId = 'default') => {
   
   console.log(`Starting bot: ${symbol} (${interval}) for user ${userId}`);
   socket.emit('start_bot', { symbol, interval, userId });
+  
+  // Always make sure we're also watching BTCUSDT for reference
+  socket.emit('subscribe_market', { symbol: 'BTCUSDT', interval: '1m' });
 };
 
 export const stopBot = (symbol, interval = '5m', userId = 'default') => {
@@ -87,23 +93,7 @@ export const disconnectSocket = () => {
   }
 };
 
-// Νέα μέθοδος για testing σημάτων
-export const testSignals = () => {
-  const testSignal = {
-    symbol: 'SOLBTC',
-    action: 'BUY',
-    indicator: 'TEST',
-    time: Date.now(),
-    price: 0.00123456,
-    reason: 'Test signal'
-  };
-  
-  // Δοκιμαστική εκπομπή σήματος
-  if (socket) {
-    console.log('Emitting test signal:', testSignal);
-    socket.emit('test_trade_signal', testSignal);
-  }
-};
+// Test signals function removed
 
 const socketService = {
   connectSocket,
@@ -111,8 +101,7 @@ const socketService = {
   unsubscribeFromMarketData,
   startBot,
   stopBot,
-  disconnectSocket,
-  testSignals
+  disconnectSocket
 };
 
 export default socketService;

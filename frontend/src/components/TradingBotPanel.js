@@ -1,11 +1,11 @@
 // src/components/TradingBotPanel.js - Πλήρης διόρθωση
 import React, { useState, useEffect } from 'react';
-import { connectSocket, startBot, stopBot, testSignals } from '../services/socketService';
+import { connectSocket, startBot, stopBot } from '../services/socketService';
 import CandlestickChartApex from './CandlestickChartApex';
 import axios from 'axios';
 
 const TradingBotPanel = () => {
-  const [symbol, setSymbol] = useState('SOLBTC'); // Default to SOLBTC for testing
+  const [symbol, setSymbol] = useState('ETHBTC'); // Changed from SOLBTC to ETHBTC as default
   const [interval, setInterval] = useState('1m');  // Change to 1m to match logs
   const [isRunning, setIsRunning] = useState(false);
   const [signals, setSignals] = useState([]);
@@ -91,8 +91,9 @@ const TradingBotPanel = () => {
     const handleTradeSignal = (signal) => {
       console.log(`[Component] Trade signal received: ${signal.action} ${signal.symbol} (${signal.indicator})`);
       
-      if (signal.symbol === symbol) {
-        console.log(`Signal matches current symbol ${symbol} - adding to display`);
+      // Fix: Also handle BTCUSDT signals
+      if (signal.symbol === symbol || signal.symbol === 'BTCUSDT') {
+        console.log(`Signal matches current symbol ${symbol} or BTCUSDT - adding to display`);
         
         setSignals(prev => {
           // Check if we already have this signal
@@ -123,20 +124,7 @@ const TradingBotPanel = () => {
     socket.on('bot_stopped', handleBotStopped);
     socket.on('trade_signal', handleTradeSignal);
     
-    // For testing - you can remove this in production
-    setTimeout(() => {
-      const testSignal = {
-        symbol: symbol,
-        action: 'BUY',
-        indicator: 'TEST',
-        time: Date.now(),
-        price: 0.00123456,
-        reason: 'Test signal from component'
-      };
-      
-      console.log('Simulating trade signal:', testSignal);
-      handleTradeSignal(testSignal);
-    }, 3000);
+    // No test signals - removed
     
     // Reset signals when changing symbols
     setSignals([]);
@@ -153,27 +141,17 @@ const TradingBotPanel = () => {
 
   const handleStartBot = () => {
     startBot(symbol, interval);
+    
+    // Also explicitly subscribe to BTCUSDT signals if needed
+    const socket = connectSocket();
+    socket.emit('subscribe_market', { symbol: 'BTCUSDT', interval: '1m' });
   };
 
   const handleStopBot = () => {
     stopBot(symbol, interval);
   };
   
-  const handleTestSignal = () => {
-    // This will emit a test signal from the client
-    const testSignal = {
-      symbol: symbol,
-      action: 'BUY',
-      indicator: 'TEST',
-      time: Date.now(),
-      price: 0.00123456,
-      reason: 'Manual test signal'
-    };
-    
-    // Add directly to the state
-    setSignals(prev => [testSignal, ...prev]);
-    console.log('Manual test signal added');
-  };
+  // Test signal function removed
 
   // Μορφοποίηση τιμής με BTC
   const formatBTCPrice = (price) => {
@@ -215,6 +193,7 @@ const TradingBotPanel = () => {
               <option value="SOLBTC">Solana (SOL/BTC)</option>
               <option value="XRPBTC">Ripple (XRP/BTC)</option>
               <option value="DOTBTC">Polkadot (DOT/BTC)</option>
+              <option value="BTCUSDT">Bitcoin (BTC/USDT)</option>
             </select>
           </div>
           
@@ -266,13 +245,7 @@ const TradingBotPanel = () => {
             </button>
           )}
           
-          {/* Debug button to test signal display */}
-          <button 
-            onClick={handleTestSignal}
-            style={{ marginLeft: '10px', background: '#6200ea', color: 'white', padding: '10px 20px', border: 'none', borderRadius: '4px', cursor: 'pointer' }}
-          >
-            Add Test Signal
-          </button>
+          {/* Test signal button removed */}
         </div>
       </div>
       
@@ -352,9 +325,10 @@ const TradingBotPanel = () => {
               <thead>
                 <tr>
                   <th>Time</th>
+                  <th>Symbol</th>
                   <th>Signal</th>
                   <th>Action</th>
-                  <th>Price (BTC)</th>
+                  <th>Price</th>
                   <th>Reason</th>
                 </tr>
               </thead>
@@ -362,9 +336,14 @@ const TradingBotPanel = () => {
                 {signals.map((signal, index) => (
                   <tr key={index} className={signal.action.toLowerCase()}>
                     <td>{new Date(signal.time).toLocaleTimeString()}</td>
+                    <td>{signal.symbol}</td>
                     <td>{signal.indicator}</td>
                     <td>{signal.action}</td>
-                    <td>₿{parseFloat(signal.price).toFixed(8)}</td>
+                    <td>
+                      {signal.symbol === 'BTCUSDT' 
+                        ? `$${parseFloat(signal.price).toFixed(2)}` 
+                        : `₿${parseFloat(signal.price).toFixed(8)}`}
+                    </td>
                     <td>{signal.reason}</td>
                   </tr>
                 ))}
