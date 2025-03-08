@@ -700,7 +700,7 @@ const TradingBotPanel = () => {
       
       {/* Chart */}
       <div className="chart-section">
-        <CandlestickChartApex symbol={symbol} interval={interval} />
+        <CandlestickChartApex symbol={symbol} interval={interval} initialSignals={signals} />
       </div>
       
       {/* Indicators panel */}

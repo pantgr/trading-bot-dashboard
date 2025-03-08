@@ -1,16 +1,17 @@
-// src/components/CandlestickChartApex.js - Cleaned version
+// src/components/CandlestickChartApex.js - Με επιθετική διατήρηση των σημάτων
 import React, { useState, useEffect, useRef } from 'react';
 import ReactApexChart from 'react-apexcharts';
 import { connectSocket } from '../services/socketService';
 import axios from 'axios';
 import './CandlestickChartApex.css';
 
-const CandlestickChartApex = ({ symbol, interval = '5m' }) => {
+const CandlestickChartApex = ({ symbol, interval = '5m', initialSignals = [] }) => {
   // Use refs to track socket and subscription status
   const socketRef = useRef(null);
   const isSubscribedRef = useRef(false);
-  const signalsRef = useRef([]);
+  const signalsRef = useRef(initialSignals); // Initialize with initialSignals
   const signalUpdateTimeoutRef = useRef(null);
+  const annotationTimerRef = useRef(null); // Timer ref to ensure annotations persist
   const isInitializedRef = useRef(false);
   
   const [series, setSeries] = useState([{
@@ -23,7 +24,8 @@ const CandlestickChartApex = ({ symbol, interval = '5m' }) => {
     data: []
   }]);
   
-  const [signals, setSignals] = useState([]);
+  // Initialize signals state with initialSignals
+  const [signals, setSignals] = useState(initialSignals);
   const [isLoading, setIsLoading] = useState(true);
   const [quoteAsset, setQuoteAsset] = useState('');
   const [baseAsset, setBaseAsset] = useState('');
@@ -51,6 +53,19 @@ const CandlestickChartApex = ({ symbol, interval = '5m' }) => {
         enabled: false
       },
       background: '#1e293b',
+      events: {
+        // Add event to reapply annotations when chart is redrawn
+        beforeResetZoom: function() {
+          setTimeout(() => updateSignalAnnotations(signalsRef.current), 100);
+          return true;
+        },
+        zoomed: function() {
+          setTimeout(() => updateSignalAnnotations(signalsRef.current), 100);
+        },
+        scrolled: function() {
+          setTimeout(() => updateSignalAnnotations(signalsRef.current), 100);
+        }
+      }
     },
     title: {
       text: `${symbol} Price Chart (${interval})`,
@@ -199,6 +214,71 @@ const CandlestickChartApex = ({ symbol, interval = '5m' }) => {
     }
   };
 
+  // Create a function to persistently keep annotations updated
+  const ensureAnnotationsPresent = () => {
+    if (signalsRef.current && signalsRef.current.length > 0) {
+      updateSignalAnnotations(signalsRef.current);
+    }
+  };
+
+  // Start a timer that periodically checks and reapplies annotations
+  useEffect(() => {
+    // Apply initial annotations immediately when component mounts
+    if (initialSignals && initialSignals.length > 0) {
+      // Short delay to ensure chart is ready
+      setTimeout(() => {
+        console.log('Setting initial annotations:', initialSignals.length);
+        updateSignalAnnotations(initialSignals);
+      }, 500);
+    }
+
+    // Set up a timer to reapply annotations every few seconds
+    annotationTimerRef.current = setInterval(() => {
+      ensureAnnotationsPresent();
+    }, 2000); // Check every 2 seconds
+    
+    return () => {
+      // Clean up timer on unmount
+      if (annotationTimerRef.current) {
+        clearInterval(annotationTimerRef.current);
+      }
+    };
+  }, []);
+
+  // Update signal annotations without triggering re-renders
+  const updateSignalAnnotations = (allSignals) => {
+    if (!allSignals || !allSignals.length) return;
+    
+    const annotations = allSignals.map(signal => {
+      return {
+        x: new Date(signal.time).getTime(),
+        y: signal.price,
+        marker: {
+          size: 6,
+          fillColor: signal.action === 'BUY' ? '#4CAF50' : '#FF5252',
+          strokeColor: '#fff',
+          radius: 2
+        },
+        label: {
+          borderColor: signal.action === 'BUY' ? '#4CAF50' : '#FF5252',
+          style: {
+            color: '#fff',
+            background: signal.action === 'BUY' ? '#4CAF50' : '#FF5252',
+          },
+          text: `${signal.indicator} ${signal.action}`
+        }
+      };
+    });
+    
+    // Update options with new annotations
+    setOptions(prevOptions => {
+      // Create a new options object, making sure it's a deep copy
+      const newOptions = JSON.parse(JSON.stringify(prevOptions));
+      newOptions.annotations = { points: annotations };
+      return newOptions;
+    });
+  };
+
   // Fetch symbol details when symbol changes
   useEffect(() => {
     const fetchSymbolDetails = async () => {
@@ -267,6 +347,11 @@ const CandlestickChartApex = ({ symbol, interval = '5m' }) => {
             );
           };
           
+          // Preserve existing annotations
+          if (signalsRef.current && signalsRef.current.length > 0) {
+            updateSignalAnnotations(signalsRef.current);
+          }
+          
           setOptions(newOptions);
         }
       } catch (error) {
@@ -299,39 +384,6 @@ const CandlestickChartApex = ({ symbol, interval = '5m' }) => {
       };
     });
   };
-  
-  // Update signal annotations without triggering re-renders
-  const updateSignalAnnotations = (allSignals) => {
-    if (!allSignals || !allSignals.length) return;
-    
-    const annotations = allSignals.map(signal => {
-      return {
-        x: new Date(signal.time).getTime(),
-        y: signal.price,
-        marker: {
-          size: 6,
-          fillColor: signal.action === 'BUY' ? '#4CAF50' : '#FF5252',
-          strokeColor: '#fff',
-          radius: 2
-        },
-        label: {
-          borderColor: signal.action === 'BUY' ? '#4CAF50' : '#FF5252',
-          style: {
-            color: '#fff',
-            background: signal.action === 'BUY' ? '#4CAF50' : '#FF5252',
-          },
-          text: `${signal.indicator} ${signal.action}`
-        }
-      };
-    });
-    
-    setOptions(prevOptions => ({
-      ...prevOptions,
-      annotations: {
-        points: annotations
-      }
-    }));
-  };
 
   // Initialize socket and handle cleanup
   useEffect(() => {
@@ -363,24 +415,17 @@ const CandlestickChartApex = ({ symbol, interval = '5m' }) => {
     const socket = socketRef.current;
     if (!socket) return;
     
-    // Clear previous data
+    // Clear previous data but preserve signals/annotations
     setSeries([{ name: 'candle', data: [] }]);
     setVolumeSeries([{ name: 'volume', data: [] }]);
-    setSignals([]);
-    signalsRef.current = [];
     setIsLoading(true);
     
-    // Update chart title
-    setOptions(prevOptions => ({
-      ...prevOptions,
-      title: {
-        ...prevOptions.title,
-        text: `${symbol} Price Chart (${interval})`
-      },
-      annotations: {
-        points: []
-      }
-    }));
+    // Update chart title WITHOUT clearing annotations
+    setOptions(prevOptions => {
+      const newOptions = { ...prevOptions };
+      newOptions.title.text = `${symbol} Price Chart (${interval})`;
+      return newOptions;
+    });
     
     // Function to handle historical data
     const handleHistoricalData = (data) => {
@@ -399,6 +444,14 @@ const CandlestickChartApex = ({ symbol, interval = '5m' }) => {
         }]);
         
         setIsLoading(false);
+        
+        // After loading historical data, reapply annotations with a slight delay
+        setTimeout(() => {
+          if (signalsRef.current.length > 0) {
+            console.log('Reapplying annotations after data load:', signalsRef.current.length);
+            updateSignalAnnotations(signalsRef.current);
+          }
+        }, 500);
       }
     };
     
@@ -464,6 +517,9 @@ const CandlestickChartApex = ({ symbol, interval = '5m' }) => {
             data: newData
           }];
         });
+        
+        // Ensure annotations remain after price updates
+        ensureAnnotationsPresent();
       }
     };
     

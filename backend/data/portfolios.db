@@ -1,1 +1,3 @@
 {"userId":"default","balance":10090.938059295317,"assets":[],"equity":10090.938059295317,"createdAt":1741437807302,"updatedAt":{"$$date":1741452337362},"_id":"poJjpxg19cIGhmQN"}
+{"userId":"default","balance":10090.926374441544,"assets":[{"symbol":"SOLBTC","quantity":7.297560437189429,"averagePrice":0.0016012,"currentPrice":0.0016012,"btcPrice":0.0016012}],"equity":10090.938059295317,"createdAt":1741437807302,"updatedAt":{"$$date":1741464540247},"_id":"poJjpxg19cIGhmQN"}
+{"userId":"default","balance":10090.914689587771,"assets":[{"symbol":"SOLBTC","quantity":14.595120874378859,"averagePrice":0.0016012,"currentPrice":0.0016012,"btcPrice":0.0016012}],"equity":10090.938059295315,"createdAt":1741437807302,"updatedAt":{"$$date":1741464540252},"_id":"poJjpxg19cIGhmQN"}
