@@ -126,22 +126,13 @@ class MarketData {
   }
   
   static async find(query = {}, sort = { time: -1 }, limit = 100) {
-  try {
-    // Use a promise with the original cursor API
-    return new Promise((resolve, reject) => {
-      db.find(query)
+    try {
+      const results = await db.findAsync(query)
         .sort(sort)
-        .limit(limit)
-        .exec((err, results) => {
-          if (err) return reject(err);
-          resolve(results.map(result => new MarketData(result)));
-        });
-    });
-  } catch (error) {
-    console.error('Error finding market data:', error);
-    throw error;
-  }
-} (error) {
+        .limit(limit);
+      
+      return results.map(result => new MarketData(result));
+    } catch (error) {
       console.error('Error finding market data:', error);
       throw error;
     }

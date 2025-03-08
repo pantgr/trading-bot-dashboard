@@ -1,134 +1,247 @@
-const axios = require('axios');
-const WebSocket = require('ws');
+// models/MarketData.js - Model for storing market data cache (FIXED)
+const path = require('path');
+const Datastore = require('nedb');
+const { promisify } = require('util');
+const dbConfig = require('../config/nedb');
 
-// Map για τη διαχείριση των WebSocket subscriptions
-const subscriptions = new Map();
+// Create the database with safer configuration
+const dbPath = path.join(dbConfig.dataDir, 'market_data.db');
+const db = new Datastore({ 
+  filename: dbPath, 
+  ...dbConfig.options
+});
 
-// Λήψη ιστορικών δεδομένων από το Binance API
-exports.getHistoricalData = async (symbol, interval = '1h', limit = 100) => {
-  try {
-    const response = await axios.get('https://api.binance.com/api/v3/klines', {
-      params: {
-        symbol: symbol.toUpperCase(),
-        interval,
-        limit
-      }
-    });
+// Create indices for faster querying
+db.ensureIndex({ fieldName: 'symbol' });
+db.ensureIndex({ fieldName: 'type' });
+db.ensureIndex({ fieldName: 'time' });
+db.ensureIndex({ fieldName: 'key' }); // Composite key for lookups
 
-    // Μετατροπή των δεδομένων σε format κατάλληλο για το TradingView
-    return response.data.map(candle => ({
-      time: candle[0], // Open time
-      open: parseFloat(candle[1]),
-      high: parseFloat(candle[2]),
-      low: parseFloat(candle[3]),
-      close: parseFloat(candle[4]),
-      volume: parseFloat(candle[5])
-    }));
-  } catch (error) {
-    console.error('Error fetching historical data:', error);
-    throw error;
+// Ensure the file is created and accessible
+try {
+  if (!require('fs').existsSync(dbPath)) {
+    require('fs').writeFileSync(dbPath, '', { flag: 'wx' });
+    console.log(`Created new market_data database file at ${dbPath}`);
   }
-};
+} catch (error) {
+  console.warn(`Warning creating market_data.db: ${error.message}`);
+}
 
-// Σύνδεση με το Binance WebSocket για real-time δεδομένα
-exports.subscribe = (symbol, callback) => {
-  const formattedSymbol = symbol.toLowerCase();
-  const url = `wss://stream.binance.com:9443/ws/${formattedSymbol}@kline_1m`;
+// Promisify the database methods
+db.findOneAsync = promisify(db.findOne.bind(db));
+db.insertAsync = promisify(db.insert.bind(db));
+db.updateAsync = promisify(db.update.bind(db));
+db.removeAsync = promisify(db.remove.bind(db));
+db.countAsync = promisify(db.count.bind(db));
 
-  // Αν υπάρχει ήδη ενεργή σύνδεση για αυτό το symbol, προσθέτουμε το callback
-  if (subscriptions.has(formattedSymbol)) {
-    const subscribers = subscriptions.get(formattedSymbol).subscribers;
-    subscribers.push(callback);
-    return;
-  }
-
-  // Δημιουργία νέου WebSocket
-  const ws = new WebSocket(url);
-  
-  ws.on('open', () => {
-    console.log(`WebSocket connection opened for ${symbol}`);
-  });
-  
-  ws.on('message', (data) => {
-    try {
-      const parsedData = JSON.parse(data);
-      const kline = parsedData.k;
-      
-      // Μετατροπή δεδομένων σε κατάλληλο format
-      const candleData = {
-        symbol: parsedData.s,
-        time: kline.t,
-        open: parseFloat(kline.o),
-        high: parseFloat(kline.h),
-        low: parseFloat(kline.l),
-        close: parseFloat(kline.c),
-        volume: parseFloat(kline.v),
-        isClosed: kline.x
-      };
-      
-      // Κλήση των callbacks
-      const subscribers = subscriptions.get(formattedSymbol).subscribers;
-      subscribers.forEach(cb => cb(candleData));
-    } catch (error) {
-      console.error('Error parsing WebSocket data:', error);
-    }
-  });
-  
-  ws.on('error', (error) => {
-    console.error(`WebSocket error for ${symbol}:`, error);
-  });
-  
-  ws.on('close', () => {
-    console.log(`WebSocket connection closed for ${symbol}`);
-    // Αφαίρεση της συνδρομής
-    subscriptions.delete(formattedSymbol);
-  });
-  
-  // Αποθήκευση της συνδρομής
-  subscriptions.set(formattedSymbol, {
-    ws,
-    subscribers: [callback]
-  });
-};
-
-// Διαγραφή συνδρομής
-exports.unsubscribe = (symbol, callback) => {
-  const formattedSymbol = symbol.toLowerCase();
-  
-  if (!subscriptions.has(formattedSymbol)) {
-    return;
-  }
-  
-  const subscription = subscriptions.get(formattedSymbol);
-  const index = subscription.subscribers.indexOf(callback);
-  
-  if (index !== -1) {
-    subscription.subscribers.splice(index, 1);
-  }
-  
-  // Αν δεν υπάρχουν άλλοι subscribers, κλείνουμε το WebSocket
-  if (subscription.subscribers.length === 0) {
-    subscription.ws.close();
-    subscriptions.delete(formattedSymbol);
-  }
-};
-
-// Διαγραφή όλων των συνδρομών για έναν συγκεκριμένο client
-exports.unsubscribeAll = (clientId) => {
-  // Εδώ θα χρειαζόταν ένας μηχανισμός για να αντιστοιχίσετε το clientId με τα callbacks
-  // Για απλότητα, δεν τον υλοποιούμε εδώ
-};
-
-// Λήψη τρέχουσας τιμής για ένα symbol
-exports.getCurrentPrice = async (symbol) => {
-  try {
-    const response = await axios.get('https://api.binance.com/api/v3/ticker/price', {
-      params: { symbol: symbol.toUpperCase() }
-    });
+class MarketData {
+  constructor(data) {
+    Object.assign(this, data);
     
-    return parseFloat(response.data.price);
-  } catch (error) {
-    console.error('Error fetching current price:', error);
-    throw error;
+    // Ensure required fields
+    if (!this.symbol) throw new Error('Symbol is required');
+    if (!this.type) throw new Error('Type is required');
+    
+    // If no time is provided, use current time
+    if (!this.time) {
+      this.time = Date.now();
+    }
+    
+    // Set updatedAt
+    this.updatedAt = Date.now();
+    
+    // Generate a key for this market data entry
+    this.key = this.generateKey();
   }
-};
+  
+  // Generate a unique key for this market data
+  generateKey() {
+    const parts = [this.symbol, this.type];
+    
+    if (this.interval) {
+      parts.push(this.interval);
+    }
+    
+    if (this.time) {
+      // Round time to the nearest minute for candles
+      if (this.type === 'candle' && this.interval) {
+        let roundingFactor = 60000; // 1 minute in ms
+        
+        switch (this.interval) {
+          case '1m': roundingFactor = 60000; break;
+          case '5m': roundingFactor = 300000; break;
+          case '15m': roundingFactor = 900000; break;
+          case '30m': roundingFactor = 1800000; break;
+          case '1h': roundingFactor = 3600000; break;
+          case '4h': roundingFactor = 14400000; break;
+          case '1d': roundingFactor = 86400000; break;
+        }
+        
+        const roundedTime = Math.floor(this.time / roundingFactor) * roundingFactor;
+        parts.push(roundedTime.toString());
+      } else {
+        parts.push(this.time.toString());
+      }
+    }
+    
+    return parts.join('-');
+  }
+  
+  async save() {
+    try {
+      // Check for existing data with same key
+      const existing = await MarketData.findOne({ key: this.key });
+      
+      if (existing) {
+        // Update existing data
+        this._id = existing._id;
+        this.updatedAt = Date.now();
+        const result = await db.updateAsync({ _id: this._id }, this, {});
+        return result;
+      } else {
+        // Insert new data
+        if (!this.createdAt) {
+          this.createdAt = Date.now();
+        }
+        
+        const result = await db.insertAsync(this);
+        this._id = result._id;
+        return result;
+      }
+    } catch (error) {
+      console.error('Error saving market data:', error);
+      throw error;
+    }
+  }
+  
+  static async findOne(query) {
+    try {
+      const result = await db.findOneAsync(query);
+      return result ? new MarketData(result) : null;
+    } catch (error) {
+      console.error('Error finding market data:', error);
+      throw error;
+    }
+  }
+  
+  // FIXED: Use a promise-based approach with the original cursor API
+  static async find(query = {}, sort = { time: -1 }, limit = 100) {
+    try {
+      return new Promise((resolve, reject) => {
+        db.find(query)
+          .sort(sort)
+          .limit(limit)
+          .exec((err, results) => {
+            if (err) return reject(err);
+            resolve(results.map(result => new MarketData(result)));
+          });
+      });
+    } catch (error) {
+      console.error('Error finding market data:', error);
+      throw error;
+    }
+  }
+  
+  static async savePrice(symbol, price) {
+    try {
+      const data = new MarketData({
+        symbol,
+        type: 'price',
+        price,
+        time: Date.now()
+      });
+      
+      return await data.save();
+    } catch (error) {
+      console.error('Error saving price data:', error);
+      throw error;
+    }
+  }
+  
+  static async getLatestPrice(symbol) {
+    try {
+      return await this.findOne({ 
+        symbol, 
+        type: 'price' 
+      });
+    } catch (error) {
+      console.error('Error getting latest price:', error);
+      return null;
+    }
+  }
+  
+  static async saveCandle(symbol, interval, candle) {
+    try {
+      const data = new MarketData({
+        symbol,
+        type: 'candle',
+        interval,
+        time: candle.time,
+        open: candle.open,
+        high: candle.high,
+        low: candle.low,
+        close: candle.close,
+        volume: candle.volume,
+        isClosed: candle.isClosed
+      });
+      
+      return await data.save();
+    } catch (error) {
+      console.error('Error saving candle data:', error);
+      throw error;
+    }
+  }
+  
+  static async getCandles(symbol, interval, limit = 100) {
+    try {
+      return await this.find({ 
+        symbol, 
+        type: 'candle',
+        interval
+      }, { time: 1 }, limit); // Sort ascending by time
+    } catch (error) {
+      console.error('Error getting candles:', error);
+      return [];
+    }
+  }
+  
+  static async cleanup(options = {}) {
+    try {
+      const { 
+        priceDataAge = 1 * 24 * 60 * 60 * 1000,  // 1 day for price data
+        candleDataAge = 7 * 24 * 60 * 60 * 1000  // 7 days for candle data
+      } = options;
+      
+      const now = Date.now();
+      
+      // Use promises for simpler remove operations
+      const priceResult = await new Promise((resolve, reject) => {
+        db.remove({ 
+          type: 'price',
+          updatedAt: { $lt: now - priceDataAge }
+        }, { multi: true }, (err, numRemoved) => {
+          if (err) reject(err);
+          else resolve(numRemoved);
+        });
+      });
+      
+      const candleResult = await new Promise((resolve, reject) => {
+        db.remove({
+          type: 'candle',
+          updatedAt: { $lt: now - candleDataAge }
+        }, { multi: true }, (err, numRemoved) => {
+          if (err) reject(err);
+          else resolve(numRemoved);
+        });
+      });
+      
+      console.log(`Cleaned up ${priceResult} price entries and ${candleResult} candle entries`);
+      return { priceResult, candleResult };
+    } catch (error) {
+      console.error('Error cleaning up market data:', error);
+      throw error;
+    }
+  }
+}
+
+module.exports = MarketData;
