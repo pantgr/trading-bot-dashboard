@@ -1,44 +1,54 @@
+// services/virtualTrading.js - Updated to use NeDB
 const Portfolio = require('../models/Portfolio');
 const Transaction = require('../models/Transaction');
+const binanceService = require('./binanceService');
+const db = require('../config/nedb');
+const { promisify } = require('util');
 
-// Αρχικοποίηση portfolio για έναν χρήστη
+// Initialize portfolio for a user
 exports.initializePortfolio = async (userId = 'default') => {
   try {
-    const existingPortfolio = await Portfolio.findOne({ userId });
+    // Check if portfolio exists
+    let portfolio = await Portfolio.findOne({ userId });
     
-    if (!existingPortfolio) {
+    // If no portfolio exists, create a new one
+    if (!portfolio) {
       console.log(`Creating new portfolio for user ${userId}`);
-      const portfolio = new Portfolio({
+      portfolio = new Portfolio({
         userId,
-        balance: 10000, // Αρχικό κεφάλαιο $10,000
+        balance: 10000, // Initial capital $10,000
         assets: [],
-        equity: 10000
+        equity: 10000,
+        createdAt: Date.now(),
+        updatedAt: Date.now()
       });
       
       await portfolio.save();
-      return portfolio;
     }
     
-    return existingPortfolio;
+    return portfolio;
   } catch (error) {
     console.error('Error initializing portfolio:', error);
     throw error;
   }
 };
 
-// Επεξεργασία σήματος συναλλαγής
+// Process trading signal
 exports.processSignal = async (signal, userId = 'default') => {
   try {
+    // Get user's portfolio
     const portfolio = await this.initializePortfolio(userId);
     
-    // Λογική αυτόματων συναλλαγών βάσει των σημάτων
+    // Trading logic based on signals
     if (signal.action === 'BUY') {
-      const investmentAmount = portfolio.balance * 0.1; // Επένδυση 10% του υπολοίπου
+      // Investment amount (10% of available balance)
+      const investmentAmount = portfolio.balance * 0.1;
       const price = parseFloat(signal.price || 0);
       
       if (price > 0 && investmentAmount > 0) {
         const quantity = investmentAmount / price;
         
+        // Execute the trade
         return this.executeTrade({
           userId,
           symbol: signal.symbol,
@@ -50,13 +60,14 @@ exports.processSignal = async (signal, userId = 'default') => {
       }
     } 
     else if (signal.action === 'SELL') {
-      // Έλεγχος αν έχουμε το asset
+      // Check if we have the asset
       const assetIndex = portfolio.assets.findIndex(a => a.symbol === signal.symbol);
       
       if (assetIndex >= 0 && portfolio.assets[assetIndex].quantity > 0) {
         const price = parseFloat(signal.price || 0);
         const quantity = portfolio.assets[assetIndex].quantity;
         
+        // Execute the trade
         return this.executeTrade({
           userId,
           symbol: signal.symbol,
@@ -75,35 +86,44 @@ exports.processSignal = async (signal, userId = 'default') => {
   }
 };
 
-// Εκτέλεση συναλλαγής (αγορά ή πώληση)
+// Execute trade (buy or sell)
 exports.executeTrade = async (tradeParams) => {
   const { userId, symbol, action, quantity, price, signal } = tradeParams;
   
   try {
-    // Λήψη portfolio
-    const portfolio = await Portfolio.findOne({ userId });
+    // Get portfolio
+    let portfolio = await Portfolio.findOne({ userId });
     
     if (!portfolio) {
-      throw new Error('Portfolio not found');
+      // Create portfolio if it doesn't exist
+      portfolio = await this.initializePortfolio(userId);
     }
     
-    // Εκτέλεση συναλλαγής
+    // Get BTC price for USD conversion if needed
+    let btcPrice = 0;
+    try {
+      btcPrice = await binanceService.getCurrentPrice('BTCUSDT');
+    } catch (err) {
+      console.warn('Could not fetch BTC price, using estimate:', err.message);
+    }
+    
+    // Execute trade
     if (action === 'BUY') {
       const cost = quantity * price;
       
-      // Έλεγχος αν υπάρχει αρκετό υπόλοιπο
+      // Check if enough balance
       if (portfolio.balance < cost) {
         throw new Error('Insufficient balance');
       }
       
-      // Ενημέρωση υπολοίπου
+      // Update balance
       portfolio.balance -= cost;
       
-      // Προσθήκη ή ενημέρωση asset
+      // Add or update asset
       const assetIndex = portfolio.assets.findIndex(a => a.symbol === symbol);
       
       if (assetIndex >= 0) {
-        // Ενημέρωση υπάρχοντος asset
+        // Update existing asset
         const existingQuantity = portfolio.assets[assetIndex].quantity;
         const existingValue = portfolio.assets[assetIndex].averagePrice * existingQuantity;
         const newValue = existingValue + (quantity * price);
@@ -112,18 +132,34 @@ exports.executeTrade = async (tradeParams) => {
         portfolio.assets[assetIndex].quantity = newQuantity;
         portfolio.assets[assetIndex].averagePrice = newValue / newQuantity;
         portfolio.assets[assetIndex].currentPrice = price;
+        
+        // Store BTC price for reference
+        if (symbol.endsWith('USDT') && btcPrice > 0) {
+          portfolio.assets[assetIndex].btcPrice = price / btcPrice;
+        } else {
+          portfolio.assets[assetIndex].btcPrice = price;
+        }
       } else {
-        // Προσθήκη νέου asset
-        portfolio.assets.push({
+        // Add new asset
+        const newAsset = {
           symbol,
           quantity,
           averagePrice: price,
           currentPrice: price
-        });
+        };
+        
+        // Store BTC price for reference
+        if (symbol.endsWith('USDT') && btcPrice > 0) {
+          newAsset.btcPrice = price / btcPrice;
+        } else {
+          newAsset.btcPrice = price;
+        }
+        
+        portfolio.assets.push(newAsset);
       }
     } 
     else if (action === 'SELL') {
-      // Εύρεση asset
+      // Find asset
       const assetIndex = portfolio.assets.findIndex(a => a.symbol === symbol);
       
       if (assetIndex < 0) {
@@ -134,20 +170,20 @@ exports.executeTrade = async (tradeParams) => {
       const sellQuantity = Math.min(quantity, asset.quantity);
       const revenue = sellQuantity * price;
       
-      // Ενημέρωση υπολοίπου
+      // Update balance
       portfolio.balance += revenue;
       
-      // Ενημέρωση ποσότητας asset
+      // Update asset quantity
       asset.quantity -= sellQuantity;
       asset.currentPrice = price;
       
-      // Αφαίρεση asset αν η ποσότητα είναι 0
+      // Remove asset if quantity is 0
       if (asset.quantity <= 0) {
         portfolio.assets.splice(assetIndex, 1);
       }
     }
     
-    // Υπολογισμός νέου portfolio equity
+    // Calculate new portfolio equity
     const assetsValue = portfolio.assets.reduce(
       (sum, asset) => sum + (asset.quantity * asset.currentPrice), 
       0
@@ -156,10 +192,10 @@ exports.executeTrade = async (tradeParams) => {
     portfolio.equity = portfolio.balance + assetsValue;
     portfolio.updatedAt = Date.now();
     
-    // Αποθήκευση αλλαγών στο portfolio
+    // Save changes to portfolio
     await portfolio.save();
     
-    // Καταγραφή συναλλαγής
+    // Record transaction
     const transaction = new Transaction({
       userId,
       symbol,
@@ -167,6 +203,14 @@ exports.executeTrade = async (tradeParams) => {
       quantity,
       price,
       value: action === 'BUY' ? -(quantity * price) : (quantity * price),
+      valueUSD: symbol.endsWith('USDT') 
+        ? (action === 'BUY' ? -(quantity * price) : quantity * price)
+        : (btcPrice > 0 ? (action === 'BUY' ? -(quantity * price * btcPrice) : quantity * price * btcPrice) : undefined),
+      valueBTC: symbol.endsWith('BTC')
+        ? (action === 'BUY' ? -(quantity * price) : quantity * price)
+        : (btcPrice > 0 ? (action === 'BUY' ? -(quantity * price / btcPrice) : quantity * price / btcPrice) : undefined),
+      btcPrice: btcPrice > 0 ? btcPrice : undefined,
+      timestamp: Date.now(),
       signal
     });
     
@@ -179,7 +223,7 @@ exports.executeTrade = async (tradeParams) => {
   }
 };
 
-// Εκτέλεση χειροκίνητης συναλλαγής (από το UI)
+// Execute manual trade (from UI)
 exports.manualTrade = async (tradeParams) => {
   const { userId, symbol, action, quantity, price } = tradeParams;
   
@@ -193,9 +237,10 @@ exports.manualTrade = async (tradeParams) => {
   });
 };
 
-// Λήψη χαρτοφυλακίου
+// Get portfolio
 exports.getPortfolio = async (userId = 'default') => {
   try {
+    // Get portfolio or create if it doesn't exist
     let portfolio = await Portfolio.findOne({ userId });
     
     if (!portfolio) {
@@ -209,14 +254,12 @@ exports.getPortfolio = async (userId = 'default') => {
   }
 };
 
-// Λήψη ιστορικού συναλλαγών
+// Get transaction history
 exports.getTransactionHistory = async (userId = 'default') => {
   try {
-    const transactions = await Transaction.find({ userId })
-      .sort({ timestamp: -1 })
-      .limit(100);
-    
-    return transactions;
+    // Find transactions and sort by timestamp (most recent first)
+    const transactions = await Transaction.find({ userId });
+    return transactions.sort((a, b) => b.timestamp - a.timestamp).slice(0, 100);
   } catch (error) {
     console.error('Error fetching transaction history:', error);
     throw error;

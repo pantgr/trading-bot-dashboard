@@ -1,1 +1,2 @@
 npm install --save apexcharts react-apexcharts
+npm install nedb
