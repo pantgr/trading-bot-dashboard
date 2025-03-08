@@ -1,18 +1,30 @@
 // src/components/CandlestickChartApex.js
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import ReactApexChart from 'react-apexcharts';
 import { connectSocket } from '../services/socketService';
 import './CandlestickChartApex.css';
 
 const CandlestickChartApex = ({ symbol, interval = '5m' }) => {
+  // Use refs to track socket and subscription status
+  const socketRef = useRef(null);
+  const isSubscribedRef = useRef(false);
+  const signalsRef = useRef([]);
+  const signalUpdateTimeoutRef = useRef(null);
+  const isInitializedRef = useRef(false); // Track initialization
+  
   const [series, setSeries] = useState([{
     name: 'candle',
     data: []
   }]);
+  
   const [volumeSeries, setVolumeSeries] = useState([{
     name: 'volume',
     data: []
   }]);
+  
+  const [signals, setSignals] = useState([]);
+  const [isLoading, setIsLoading] = useState(true);
+  
   const [options, setOptions] = useState({
     chart: {
       type: 'candlestick',
@@ -105,7 +117,8 @@ const CandlestickChartApex = ({ symbol, interval = '5m' }) => {
     }
   });
   
-  const [volumeOptions, setVolumeOptions] = useState({
+  // Fixed: Use regular constant instead of state for volumeOptions
+  const volumeOptions = {
     chart: {
       height: 150,
       type: 'bar',
@@ -180,10 +193,7 @@ const CandlestickChartApex = ({ symbol, interval = '5m' }) => {
     theme: {
       mode: 'dark'
     }
-  });
-  
-  const [isLoading, setIsLoading] = useState(true);
-  const [signals, setSignals] = useState([]);
+  };
 
   // Format data for ApexCharts
   const formatCandleData = (candles) => {
@@ -208,9 +218,9 @@ const CandlestickChartApex = ({ symbol, interval = '5m' }) => {
     });
   };
   
-  // Update signals on chart
+  // Update signal annotations without triggering re-renders
   const updateSignalAnnotations = (allSignals) => {
-    if (!allSignals.length) return;
+    if (!allSignals || !allSignals.length) return;
     
     const annotations = allSignals.map(signal => {
       return {
@@ -241,11 +251,44 @@ const CandlestickChartApex = ({ symbol, interval = '5m' }) => {
     }));
   };
 
+  // Initialize socket and handle cleanup
+  // We include symbol and interval in dependencies to satisfy eslint
+  // but use isInitializedRef to ensure initialization only happens once
   useEffect(() => {
-    // Reset data when symbol or interval changes
+    // Only connect socket once
+    if (!isInitializedRef.current) {
+      console.log('Connecting to socket (one-time)');
+      socketRef.current = connectSocket();
+      isInitializedRef.current = true;
+    }
+    
+    // Return a cleanup function
+    return () => {
+      // Final cleanup
+      if (socketRef.current && isSubscribedRef.current) {
+        socketRef.current.emit('unsubscribe_market', { 
+          symbol, 
+          interval 
+        });
+        isSubscribedRef.current = false;
+      }
+      
+      if (signalUpdateTimeoutRef.current) {
+        clearTimeout(signalUpdateTimeoutRef.current);
+      }
+    };
+  }, [symbol, interval]); // Include dependencies to satisfy eslint
+
+  // Handle subscription for current symbol and interval
+  useEffect(() => {
+    const socket = socketRef.current;
+    if (!socket) return;
+    
+    // Clear previous data
     setSeries([{ name: 'candle', data: [] }]);
     setVolumeSeries([{ name: 'volume', data: [] }]);
     setSignals([]);
+    signalsRef.current = [];
     setIsLoading(true);
     
     // Update chart title
@@ -254,19 +297,16 @@ const CandlestickChartApex = ({ symbol, interval = '5m' }) => {
       title: {
         ...prevOptions.title,
         text: `${symbol} Price Chart (${interval})`
+      },
+      annotations: {
+        points: []
       }
     }));
     
-    // Connect to socket
-    const socket = connectSocket();
-    
-    // Subscribe to market data
-    socket.emit('subscribe_market', { symbol, interval });
-    
-    // Listen for historical data
-    socket.on('historical_data', (data) => {
+    // Function to handle historical data
+    const handleHistoricalData = (data) => {
       if (data.symbol === symbol && data.interval === interval) {
-        console.log('Received historical data:', data.data.length, 'candles');
+        console.log(`Received historical data for ${symbol}: ${data.data.length} candles`);
         
         const formattedCandles = formatCandleData(data.data);
         const formattedVolume = formatVolumeData(data.data);
@@ -283,17 +323,20 @@ const CandlestickChartApex = ({ symbol, interval = '5m' }) => {
         
         setIsLoading(false);
       }
-    });
+    };
     
-    // Listen for real-time updates
-    socket.on('price_update', (data) => {
+    // Function to handle price updates
+    const handlePriceUpdate = (data) => {
       if (data.symbol === symbol && data.candle) {
         const candle = data.candle;
         
         setSeries(prevSeries => {
+          // Skip update if component is unmounting
+          if (!prevSeries[0]) return prevSeries;
+          
           const newData = [...prevSeries[0].data];
           const lastCandleIndex = newData.findIndex(
-            item => new Date(item.x).getTime() === new Date(candle.time).getTime()
+            item => item && item.x && new Date(item.x).getTime() === new Date(candle.time).getTime()
           );
           
           const formattedCandle = {
@@ -316,9 +359,12 @@ const CandlestickChartApex = ({ symbol, interval = '5m' }) => {
         });
         
         setVolumeSeries(prevSeries => {
+          // Skip update if component is unmounting
+          if (!prevSeries[0]) return prevSeries;
+          
           const newData = [...prevSeries[0].data];
           const lastVolumeIndex = newData.findIndex(
-            item => new Date(item.x).getTime() === new Date(candle.time).getTime()
+            item => item && item.x && new Date(item.x).getTime() === new Date(candle.time).getTime()
           );
           
           const color = candle.close >= candle.open ? '#48bb78' : '#FF5252';
@@ -342,28 +388,77 @@ const CandlestickChartApex = ({ symbol, interval = '5m' }) => {
           }];
         });
       }
-    });
+    };
     
-    // Listen for trading signals
-    socket.on('trade_signal', (signal) => {
+    // Function to handle trade signals
+    const handleTradeSignal = (signal) => {
       if (signal.symbol === symbol) {
-        const newSignals = [...signals, signal];
-        setSignals(newSignals);
-        updateSignalAnnotations(newSignals);
+        console.log(`Received signal for ${symbol}: ${signal.action} (${signal.indicator})`);
+        
+        // Update our ref immediately
+        const newSignals = [...signalsRef.current, signal];
+        signalsRef.current = newSignals;
+        
+        // Debounce the state update to prevent too many re-renders
+        if (signalUpdateTimeoutRef.current) {
+          clearTimeout(signalUpdateTimeoutRef.current);
+        }
+        
+        signalUpdateTimeoutRef.current = setTimeout(() => {
+          setSignals(signalsRef.current);
+          updateSignalAnnotations(signalsRef.current);
+        }, 300);
       }
-    });
+    };
     
-    // Cleanup
-    return () => {
-      socket.off('historical_data');
-      socket.off('price_update');
-      socket.off('trade_signal');
+    // Clean up previous subscription if needed
+    if (isSubscribedRef.current) {
+      console.log(`Unsubscribing from previous market data`);
       socket.emit('unsubscribe_market', { symbol, interval });
+      
+      // Remove previous listeners
+      socket.off('historical_data', handleHistoricalData);
+      socket.off('price_update', handlePriceUpdate);
+      socket.off('trade_signal', handleTradeSignal);
+      
+      isSubscribedRef.current = false;
+    }
+    
+    // Subscribe to new market data
+    console.log(`Subscribing to market data for ${symbol} (${interval})`);
+    socket.emit('subscribe_market', { symbol, interval });
+    isSubscribedRef.current = true;
+    
+    // Set up event listeners
+    socket.on('historical_data', handleHistoricalData);
+    socket.on('price_update', handlePriceUpdate);
+    socket.on('trade_signal', handleTradeSignal);
+    
+    // Cleanup function
+    return () => {
+      console.log(`Removing event listeners for ${symbol} (${interval})`);
+      
+      // Clear debounce timeout
+      if (signalUpdateTimeoutRef.current) {
+        clearTimeout(signalUpdateTimeoutRef.current);
+      }
+      
+      // Remove event listeners but don't unsubscribe here - we do that in the next useEffect run
+      socket.off('historical_data', handleHistoricalData);
+      socket.off('price_update', handlePriceUpdate);
+      socket.off('trade_signal', handleTradeSignal);
     };
   }, [symbol, interval]);
-
+  
   return (
     <div className="candlestick-chart-container">
+      {isLoading && (
+        <div className="chart-loading">
+          <div className="loading-spinner"></div>
+          <p>Loading chart data...</p>
+        </div>
+      )}
+      
       <div className="chart-wrapper">
         <ReactApexChart
           options={options}
@@ -383,11 +478,11 @@ const CandlestickChartApex = ({ symbol, interval = '5m' }) => {
       <div className="chart-legend">
         <div className="legend-item">
           <span className="legend-marker buy-marker">●</span>
-          <span>Buy Signal</span>
+          <span>Buy Signal ({signals.filter(s => s.action === 'BUY').length})</span>
         </div>
         <div className="legend-item">
           <span className="legend-marker sell-marker">●</span>
-          <span>Sell Signal</span>
+          <span>Sell Signal ({signals.filter(s => s.action === 'SELL').length})</span>
         </div>
       </div>
     </div>
