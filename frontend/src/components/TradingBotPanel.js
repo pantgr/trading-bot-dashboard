@@ -1,25 +1,53 @@
-// src/components/TradingBotPanel.js - Updated with ApexCharts and price loading fix
+// src/components/TradingBotPanel.js - Πλήρης διόρθωση
 import React, { useState, useEffect } from 'react';
-import { connectSocket, startBot, stopBot } from '../services/socketService';
+import { connectSocket, startBot, stopBot, testSignals } from '../services/socketService';
 import CandlestickChartApex from './CandlestickChartApex';
 import axios from 'axios';
 
 const TradingBotPanel = () => {
-  const [symbol, setSymbol] = useState('ETHBTC');
-  const [interval, setInterval] = useState('5m');
+  const [symbol, setSymbol] = useState('SOLBTC'); // Default to SOLBTC for testing
+  const [interval, setInterval] = useState('1m');  // Change to 1m to match logs
   const [isRunning, setIsRunning] = useState(false);
   const [signals, setSignals] = useState([]);
   const [lastPrice, setLastPrice] = useState(null);
   const [indicators, setIndicators] = useState(null);
   const [isLoading, setIsLoading] = useState(true);
+  const [debugInfo, setDebugInfo] = useState({ socketEvents: [] });
 
-  // Fetch current price when symbol changes
+  // Connect to socket once when component mounts
   useEffect(() => {
+    console.log('TradingBotPanel: Initializing socket connection');
+    const socket = connectSocket();
+    
+    // Listen for general events for debugging
+    const handleAnyEvent = (event, ...args) => {
+      console.log(`[Component received] ${event}:`, args);
+      setDebugInfo(prev => ({
+        ...prev,
+        socketEvents: [{ time: new Date().toLocaleTimeString(), event, args }, ...prev.socketEvents].slice(0, 20)
+      }));
+    };
+    
+    socket.onAny(handleAnyEvent);
+    
+    // Send a ping to check connection
+    socket.emit('ping', { time: Date.now() });
+    
+    return () => {
+      socket.offAny(handleAnyEvent);
+    };
+  }, []);
+
+  // Setup data and event listeners when symbol changes
+  useEffect(() => {
+    console.log(`TradingBotPanel: Setting up for symbol ${symbol}`);
     setIsLoading(true);
     
+    const socket = connectSocket();
+    
+    // Fetch initial price
     const fetchInitialPrice = async () => {
       try {
-        // Get current price directly from API when component mounts or symbol changes
         const response = await axios.get(`/api/market-data/price/${symbol}`);
         if (response.data && response.data.price) {
           setLastPrice(response.data.price);
@@ -34,53 +62,92 @@ const TradingBotPanel = () => {
 
     fetchInitialPrice();
     
-    const socket = connectSocket();
-    
-    // Listen for price updates with improved logging
-    socket.on('price_update', (data) => {
+    // Handlers for various events
+    const handlePriceUpdate = (data) => {
       if (data.symbol === symbol) {
-        console.log(`Received price update for ${symbol}: ${data.price}`);
         setLastPrice(data.price);
-        setIsLoading(false);
       }
-    });
+    };
     
-    // Ακρόαση για ενημερώσεις δεικτών
-    socket.on('indicators_update', (data) => {
+    const handleIndicatorsUpdate = (data) => {
       if (data.symbol === symbol) {
-        setIndicators(data.indicators.current);
+        console.log('Received indicators update:', data.indicators);
+        setIndicators(data.indicators?.current || null);
       }
-    });
+    };
     
-    // Ακρόαση για σήματα συναλλαγών
-    socket.on('trade_signal', (signal) => {
-      if (signal.symbol === symbol) {
-        setSignals(prev => [signal, ...prev].slice(0, 20)); // Κρατάμε τα 20 πιο πρόσφατα
-      }
-    });
-    
-    // Ακρόαση για κατάσταση bot
-    socket.on('bot_started', (data) => {
+    const handleBotStarted = (data) => {
       if (data.symbol === symbol) {
         setIsRunning(true);
       }
-    });
+    };
     
-    socket.on('bot_stopped', (data) => {
+    const handleBotStopped = (data) => {
       if (data.symbol === symbol) {
         setIsRunning(false);
       }
-    });
+    };
     
-    // Reset signals when symbol changes
+    const handleTradeSignal = (signal) => {
+      console.log(`[Component] Trade signal received: ${signal.action} ${signal.symbol} (${signal.indicator})`);
+      
+      if (signal.symbol === symbol) {
+        console.log(`Signal matches current symbol ${symbol} - adding to display`);
+        
+        setSignals(prev => {
+          // Check if we already have this signal
+          const isDuplicate = prev.some(
+            s => s.time === signal.time && 
+                 s.indicator === signal.indicator && 
+                 s.action === signal.action
+          );
+          
+          if (!isDuplicate) {
+            const newSignals = [signal, ...prev].slice(0, 20);
+            console.log(`Updated signals (${newSignals.length}):`, newSignals);
+            return newSignals;
+          }
+          
+          console.log('Duplicate signal - ignoring');
+          return prev;
+        });
+      } else {
+        console.log(`Signal for ${signal.symbol} doesn't match ${symbol} - ignoring`);
+      }
+    };
+    
+    // Register all event listeners
+    socket.on('price_update', handlePriceUpdate);
+    socket.on('indicators_update', handleIndicatorsUpdate);
+    socket.on('bot_started', handleBotStarted);
+    socket.on('bot_stopped', handleBotStopped);
+    socket.on('trade_signal', handleTradeSignal);
+    
+    // For testing - you can remove this in production
+    setTimeout(() => {
+      const testSignal = {
+        symbol: symbol,
+        action: 'BUY',
+        indicator: 'TEST',
+        time: Date.now(),
+        price: 0.00123456,
+        reason: 'Test signal from component'
+      };
+      
+      console.log('Simulating trade signal:', testSignal);
+      handleTradeSignal(testSignal);
+    }, 3000);
+    
+    // Reset signals when changing symbols
     setSignals([]);
     
     return () => {
-      socket.off('price_update');
-      socket.off('indicators_update');
-      socket.off('trade_signal');
-      socket.off('bot_started');
-      socket.off('bot_stopped');
+      console.log(`Cleaning up listeners for ${symbol}`);
+      socket.off('price_update', handlePriceUpdate);
+      socket.off('indicators_update', handleIndicatorsUpdate);
+      socket.off('bot_started', handleBotStarted);
+      socket.off('bot_stopped', handleBotStopped);
+      socket.off('trade_signal', handleTradeSignal);
     };
   }, [symbol]);
 
@@ -90,6 +157,22 @@ const TradingBotPanel = () => {
 
   const handleStopBot = () => {
     stopBot(symbol, interval);
+  };
+  
+  const handleTestSignal = () => {
+    // This will emit a test signal from the client
+    const testSignal = {
+      symbol: symbol,
+      action: 'BUY',
+      indicator: 'TEST',
+      time: Date.now(),
+      price: 0.00123456,
+      reason: 'Manual test signal'
+    };
+    
+    // Add directly to the state
+    setSignals(prev => [testSignal, ...prev]);
+    console.log('Manual test signal added');
   };
 
   // Μορφοποίηση τιμής με BTC
@@ -182,6 +265,14 @@ const TradingBotPanel = () => {
               Stop Bot
             </button>
           )}
+          
+          {/* Debug button to test signal display */}
+          <button 
+            onClick={handleTestSignal}
+            style={{ marginLeft: '10px', background: '#6200ea', color: 'white', padding: '10px 20px', border: 'none', borderRadius: '4px', cursor: 'pointer' }}
+          >
+            Add Test Signal
+          </button>
         </div>
       </div>
       
@@ -190,40 +281,71 @@ const TradingBotPanel = () => {
         <CandlestickChartApex symbol={symbol} interval={interval} />
       </div>
       
-      {indicators && (
+      {/* Indicators with improved error handling and debugging */}
+      {indicators ? (
         <div className="indicators-panel">
           <h3>Technical Indicators</h3>
           <div className="indicators-grid">
-            <div className="indicator">
-              <div className="indicator-label">RSI (14)</div>
-              <div className={`indicator-value ${
-                indicators.rsi < 30 ? 'oversold' : 
-                indicators.rsi > 70 ? 'overbought' : ''
-              }`}>
-                {indicators.rsi.toFixed(2)}
+            {indicators.rsi !== undefined && (
+              <div className="indicator">
+                <div className="indicator-label">RSI (14)</div>
+                <div className={`indicator-value ${
+                  indicators.rsi < 30 ? 'oversold' : 
+                  indicators.rsi > 70 ? 'overbought' : ''
+                }`}>
+                  {typeof indicators.rsi === 'number' ? indicators.rsi.toFixed(2) : 'N/A'}
+                </div>
               </div>
-            </div>
+            )}
             
-            <div className="indicator">
-              <div className="indicator-label">EMA 9</div>
-              <div className="indicator-value">{indicators.ema9.toFixed(8)}</div>
-            </div>
+            {indicators.ema9 !== undefined && (
+              <div className="indicator">
+                <div className="indicator-label">EMA 9</div>
+                <div className="indicator-value">
+                  {typeof indicators.ema9 === 'number' ? indicators.ema9.toFixed(8) : 'N/A'}
+                </div>
+              </div>
+            )}
             
-            <div className="indicator">
-              <div className="indicator-label">EMA 21</div>
-              <div className="indicator-value">{indicators.ema21.toFixed(8)}</div>
-            </div>
+            {indicators.ema21 !== undefined && (
+              <div className="indicator">
+                <div className="indicator-label">EMA 21</div>
+                <div className="indicator-value">
+                  {typeof indicators.ema21 === 'number' ? indicators.ema21.toFixed(8) : 'N/A'}
+                </div>
+              </div>
+            )}
             
-            <div className="indicator">
-              <div className="indicator-label">Fibonacci 61.8%</div>
-              <div className="indicator-value">{indicators.fibonacci.level61_8.toFixed(8)}</div>
-            </div>
+            {indicators.fibonacci && indicators.fibonacci.level61_8 !== undefined && (
+              <div className="indicator">
+                <div className="indicator-label">Fibonacci 61.8%</div>
+                <div className="indicator-value">
+                  {typeof indicators.fibonacci.level61_8 === 'number' 
+                    ? indicators.fibonacci.level61_8.toFixed(8) 
+                    : 'N/A'}
+                </div>
+              </div>
+            )}
           </div>
+
+          {/* Debug info */}
+          <details style={{ marginTop: '10px', fontSize: '12px', color: '#666' }}>
+            <summary>Debug Indicators</summary>
+            <pre style={{ whiteSpace: 'pre-wrap', maxHeight: '200px', overflow: 'auto' }}>
+              {JSON.stringify(indicators, null, 2)}
+            </pre>
+          </details>
+        </div>
+      ) : (
+        <div className="indicators-panel">
+          <h3>Technical Indicators</h3>
+          <p>Waiting for indicator data...</p>
         </div>
       )}
       
+      {/* Trading Signals Panel with Debug Info */}
       <div className="signals-panel">
-        <h3>Trading Signals</h3>
+        <h3>Trading Signals {signals.length > 0 ? `(${signals.length})` : ''}</h3>
         {signals.length > 0 ? (
           <div className="signals-table">
             <table>
@@ -252,6 +374,27 @@ const TradingBotPanel = () => {
         ) : (
           <p className="no-signals">No signals detected yet</p>
         )}
+      </div>
+      
+      {/* Debug Panel */}
+      <div style={{marginTop: '20px', padding: '10px', backgroundColor: '#f8f9fa', borderRadius: '4px'}}>
+        <details>
+          <summary style={{cursor: 'pointer', fontWeight: 'bold'}}>Debug Information</summary>
+          <div>
+            <p>Current Symbol: {symbol}</p>
+            <p>Interval: {interval}</p>
+            <p>Bot Running: {isRunning ? 'Yes' : 'No'}</p>
+            <p>Signals Count: {signals.length}</p>
+            <p>Socket Events Received:</p>
+            <ul style={{maxHeight: '200px', overflow: 'auto', fontSize: '12px'}}>
+              {debugInfo.socketEvents.map((event, i) => (
+                <li key={i}>
+                  {event.time}: {event.event}
+                </li>
+              ))}
+            </ul>
+          </div>
+        </details>
       </div>
     </div>
   );
