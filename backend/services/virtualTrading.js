@@ -1,4 +1,4 @@
-// services/virtualTrading.js - Updated to use NeDB with improved error handling
+// services/virtualTrading.js - Fixed version to prevent duplicate transactions
 const Portfolio = require('../models/Portfolio');
 const Transaction = require('../models/Transaction');
 const binanceService = require('./binanceService');
@@ -39,6 +39,45 @@ exports.initializePortfolio = async (userId = 'default') => {
   } catch (error) {
     console.error('Error initializing portfolio:', error);
     throw error;
+  }
+};
+
+// Check if a transaction is a duplicate
+// This is the key function to prevent duplicate transactions
+const isDuplicateTransaction = async (newTx) => {
+  try {
+    // Create a time window of 3 seconds to catch near-simultaneous transactions
+    const startTime = newTx.timestamp - 3000;
+    const endTime = newTx.timestamp + 3000;
+    
+    // Find transactions with the same basic properties
+    const existingTransactions = await Transaction.find({
+      userId: newTx.userId,
+      symbol: newTx.symbol,
+      action: newTx.action
+    });
+    
+    // Check if any existing transaction matches closely enough to be a duplicate
+    const isDuplicate = existingTransactions.some(tx => {
+      // Time within 3 seconds
+      const timeMatch = tx.timestamp >= startTime && tx.timestamp <= endTime;
+      
+      // Quantity approximately the same (allow 0.1% difference)
+      const quantityDiff = Math.abs(tx.quantity - newTx.quantity) / newTx.quantity;
+      const quantityMatch = quantityDiff < 0.001;
+      
+      // Price approximately the same (allow 0.1% difference)
+      const priceDiff = Math.abs(tx.price - newTx.price) / newTx.price;
+      const priceMatch = priceDiff < 0.001;
+      
+      return timeMatch && quantityMatch && priceMatch;
+    });
+    
+    return isDuplicate;
+  } catch (error) {
+    console.error('Error checking for duplicate transaction:', error);
+    // If there's an error, we'll assume it's not a duplicate to be safe
+    return false;
   }
 };
 
@@ -127,6 +166,28 @@ exports.executeTrade = async (tradeParams) => {
   
   try {
     console.log(`Executing ${action} trade for ${userId}: ${quantity} ${symbol} @ ${price}`);
+    
+    // Create transaction object first (for deduplication check)
+    const transactionData = {
+      userId,
+      symbol,
+      action,
+      quantity,
+      price,
+      value: action === 'BUY' ? -(quantity * price) : (quantity * price),
+      timestamp: Date.now(),
+      signal
+    };
+
+    // Check if this transaction is a duplicate
+    const isDuplicate = await isDuplicateTransaction(transactionData);
+    if (isDuplicate) {
+      console.log(`Skipping duplicate transaction: ${action} ${quantity} ${symbol} @ ${price}`);
+      
+      // Get the portfolio to return (without executing the trade again)
+      return await Portfolio.findOne({ userId });
+    }
+    
     // Get portfolio
     let portfolio = await Portfolio.findOne({ userId });
     
@@ -239,25 +300,22 @@ exports.executeTrade = async (tradeParams) => {
       throw saveErr;
     }
     
-    // Record transaction
+    // Complete the transaction with BTC price information
+    if (btcPrice > 0) {
+      transactionData.valueUSD = symbol.endsWith('USDT') 
+        ? transactionData.value
+        : transactionData.value * btcPrice;
+      
+      transactionData.valueBTC = symbol.endsWith('BTC')
+        ? transactionData.value
+        : transactionData.value / btcPrice;
+      
+      transactionData.btcPrice = btcPrice;
+    }
+    
+    // Record transaction - using the transaction data we created earlier
     console.log(`Recording transaction for ${action} ${quantity} ${symbol}`);
-    const transaction = new Transaction({
-      userId,
-      symbol,
-      action,
-      quantity,
-      price,
-      value: action === 'BUY' ? -(quantity * price) : (quantity * price),
-      valueUSD: symbol.endsWith('USDT') 
-        ? (action === 'BUY' ? -(quantity * price) : quantity * price)
-        : (btcPrice > 0 ? (action === 'BUY' ? -(quantity * price * btcPrice) : quantity * price * btcPrice) : undefined),
-      valueBTC: symbol.endsWith('BTC')
-        ? (action === 'BUY' ? -(quantity * price) : quantity * price)
-        : (btcPrice > 0 ? (action === 'BUY' ? -(quantity * price / btcPrice) : quantity * price / btcPrice) : undefined),
-      btcPrice: btcPrice > 0 ? btcPrice : undefined,
-      timestamp: Date.now(),
-      signal
-    });
+    const transaction = new Transaction(transactionData);
     
     try {
       await transaction.save();
