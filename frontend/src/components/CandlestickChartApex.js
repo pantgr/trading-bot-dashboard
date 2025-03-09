@@ -1,4 +1,4 @@
-// src/components/CandlestickChartApex.js - Updated to fetch signals from API
+// Updated CandlestickChartApex.js - Fixed Promise rendering issue
 import React, { useState, useEffect, useRef } from 'react';
 import ReactApexChart from 'react-apexcharts';
 import { connectSocket } from '../services/socketService';
@@ -29,6 +29,7 @@ const CandlestickChartApex = ({ symbol, interval = '5m', initialSignals = [] }) 
   const [isLoading, setIsLoading] = useState(true);
   const [quoteAsset, setQuoteAsset] = useState('');
   const [baseAsset, setBaseAsset] = useState('');
+  const [pairInfo, setPairInfo] = useState(''); // Added to store formatted pair info
   
   // Initialize options with default settings
   const [options, setOptions] = useState({
@@ -136,84 +137,6 @@ const CandlestickChartApex = ({ symbol, interval = '5m', initialSignals = [] }) 
     }
   });
   
-  // Fixed: Use regular constant instead of state for volumeOptions
-  const volumeOptions = {
-    chart: {
-      height: 150,
-      type: 'bar',
-      id: 'volume',
-      brush: {
-        enabled: true,
-        target: 'candles'
-      },
-      selection: {
-        enabled: true
-      },
-      background: '#1e293b',
-    },
-    dataLabels: {
-      enabled: false
-    },
-    plotOptions: {
-      bar: {
-        columnWidth: '80%',
-        colors: {
-          ranges: [{
-            from: -1000,
-            to: 0,
-            color: '#F15B46'
-          }, {
-            from: 1,
-            to: 10000,
-            color: '#48bb78'
-          }]
-        },
-      }
-    },
-    stroke: {
-      width: 0
-    },
-    xaxis: {
-      type: 'datetime',
-      labels: {
-        style: {
-          colors: '#e2e8f0'
-        }
-      },
-      axisBorder: {
-        color: '#475569'
-      },
-      axisTicks: {
-        color: '#475569'
-      }
-    },
-    yaxis: {
-      labels: {
-        show: true,
-        style: {
-          colors: '#e2e8f0'
-        }
-      }
-    },
-    title: {
-      text: 'Volume',
-      align: 'left',
-      style: {
-        color: '#e2e8f0'
-      }
-    },
-    grid: {
-      borderColor: '#334155',
-      strokeDashArray: 2,
-    },
-    tooltip: {
-      theme: 'dark'
-    },
-    theme: {
-      mode: 'dark'
-    }
-  };
-
   // Fetch signals from API
   const fetchSignals = async () => {
     try {
@@ -309,6 +232,54 @@ const CandlestickChartApex = ({ symbol, interval = '5m', initialSignals = [] }) 
     });
   };
 
+  // Format data for ApexCharts
+  const formatCandleData = (candles) => {
+    if (!candles || !candles.length) return [];
+    
+    return candles.map(candle => ({
+      x: new Date(candle.time),
+      y: [candle.open, candle.high, candle.low, candle.close]
+    }));
+  };
+  
+  const formatVolumeData = (candles) => {
+    if (!candles || !candles.length) return [];
+    
+    return candles.map(candle => {
+      const color = candle.close >= candle.open ? '#48bb78' : '#FF5252';
+      return {
+        x: new Date(candle.time),
+        y: candle.volume,
+        fillColor: color
+      };
+    });
+  };
+
+  // Initialize socket and handle cleanup
+  useEffect(() => {
+    // Only connect socket once
+    if (!isInitializedRef.current) {
+      socketRef.current = connectSocket();
+      isInitializedRef.current = true;
+    }
+    
+    // Return a cleanup function
+    return () => {
+      // Final cleanup
+      if (socketRef.current && isSubscribedRef.current) {
+        socketRef.current.emit('unsubscribe_market', { 
+          symbol, 
+          interval 
+        });
+        isSubscribedRef.current = false;
+      }
+      
+      if (signalUpdateTimeoutRef.current) {
+        clearTimeout(signalUpdateTimeoutRef.current);
+      }
+    };
+  }, []);
+
   // Fetch symbol details when symbol changes
   useEffect(() => {
     const fetchSymbolDetails = async () => {
@@ -319,6 +290,35 @@ const CandlestickChartApex = ({ symbol, interval = '5m', initialSignals = [] }) 
         if (symbolInfo) {
           setQuoteAsset(symbolInfo.quoteAsset);
           setBaseAsset(symbolInfo.baseAsset);
+          
+          // Update formatted pair info
+          let quoteSymbol = '';
+          switch (symbolInfo.quoteAsset) {
+            case 'BTC':
+              quoteSymbol = '₿';
+              break;
+            case 'ETH':
+              quoteSymbol = 'Ξ';
+              break;
+            case 'USDT':
+            case 'BUSD':
+            case 'USDC':
+            case 'USD':
+            case 'DAI':
+              quoteSymbol = '$';
+              break;
+            case 'EUR':
+              quoteSymbol = '€';
+              break;
+            case 'GBP':
+              quoteSymbol = '£';
+              break;
+            default:
+              quoteSymbol = symbolInfo.quoteAsset;
+          }
+          
+          // Set the formatted pair info - this is synchronous, not a Promise
+          setPairInfo(`${symbolInfo.baseAsset}/${symbolInfo.quoteAsset} (${quoteSymbol})`);
           
           // Update chart title and y-axis formatter
           const newOptions = { ...options };
@@ -391,54 +391,6 @@ const CandlestickChartApex = ({ symbol, interval = '5m', initialSignals = [] }) 
     
     fetchSymbolDetails();
   }, [symbol, interval]);
-
-  // Format data for ApexCharts
-  const formatCandleData = (candles) => {
-    if (!candles || !candles.length) return [];
-    
-    return candles.map(candle => ({
-      x: new Date(candle.time),
-      y: [candle.open, candle.high, candle.low, candle.close]
-    }));
-  };
-  
-  const formatVolumeData = (candles) => {
-    if (!candles || !candles.length) return [];
-    
-    return candles.map(candle => {
-      const color = candle.close >= candle.open ? '#48bb78' : '#FF5252';
-      return {
-        x: new Date(candle.time),
-        y: candle.volume,
-        fillColor: color
-      };
-    });
-  };
-
-  // Initialize socket and handle cleanup
-  useEffect(() => {
-    // Only connect socket once
-    if (!isInitializedRef.current) {
-      socketRef.current = connectSocket();
-      isInitializedRef.current = true;
-    }
-    
-    // Return a cleanup function
-    return () => {
-      // Final cleanup
-      if (socketRef.current && isSubscribedRef.current) {
-        socketRef.current.emit('unsubscribe_market', { 
-          symbol, 
-          interval 
-        });
-        isSubscribedRef.current = false;
-      }
-      
-      if (signalUpdateTimeoutRef.current) {
-        clearTimeout(signalUpdateTimeoutRef.current);
-      }
-    };
-  }, []);
 
   // Handle subscription for current symbol and interval
   useEffect(() => {
@@ -610,36 +562,82 @@ const CandlestickChartApex = ({ symbol, interval = '5m', initialSignals = [] }) 
     };
   }, [symbol, interval]);
   
-  // Format currency info for display
-  const formatCurrencyInfo = () => {
-    if (!baseAsset || !quoteAsset) return '';
-    
-    let quoteSymbol = '';
-    switch (quoteAsset) {
-      case 'BTC':
-        quoteSymbol = '₿';
-        break;
-      case 'ETH':
-        quoteSymbol = 'Ξ';
-        break;
-      case 'USDT':
-      case 'BUSD':
-      case 'USDC':
-      case 'USD':
-      case 'DAI':
-        quoteSymbol = '$';
-        break;
-      case 'EUR':
-        quoteSymbol = '€';
-        break;
-      case 'GBP':
-        quoteSymbol = '£';
-        break;
-      default:
-        quoteSymbol = quoteAsset;
+  // Fixed volume chart options - defined as a constant outside the render cycle
+  const volumeOptions = {
+    chart: {
+      height: 150,
+      type: 'bar',
+      id: 'volume',
+      brush: {
+        enabled: true,
+        target: 'candles'
+      },
+      selection: {
+        enabled: true
+      },
+      background: '#1e293b',
+    },
+    dataLabels: {
+      enabled: false
+    },
+    plotOptions: {
+      bar: {
+        columnWidth: '80%',
+        colors: {
+          ranges: [{
+            from: -1000,
+            to: 0,
+            color: '#F15B46'
+          }, {
+            from: 1,
+            to: 10000,
+            color: '#48bb78'
+          }]
+        },
+      }
+    },
+    stroke: {
+      width: 0
+    },
+    xaxis: {
+      type: 'datetime',
+      labels: {
+        style: {
+          colors: '#e2e8f0'
+        }
+      },
+      axisBorder: {
+        color: '#475569'
+      },
+      axisTicks: {
+        color: '#475569'
+      }
+    },
+    yaxis: {
+      labels: {
+        show: true,
+        style: {
+          colors: '#e2e8f0'
+        }
+      }
+    },
+    title: {
+      text: 'Volume',
+      align: 'left',
+      style: {
+        color: '#e2e8f0'
+      }
+    },
+    grid: {
+      borderColor: '#334155',
+      strokeDashArray: 2,
+    },
+    tooltip: {
+      theme: 'dark'
+    },
+    theme: {
+      mode: 'dark'
     }
-    
-    return `${baseAsset}/${quoteAsset} (${quoteSymbol})`;
   };
   
   return (
@@ -652,7 +650,8 @@ const CandlestickChartApex = ({ symbol, interval = '5m', initialSignals = [] }) 
       )}
       
       <div className="chart-header">
-        <h3>{formatCurrencyInfo()} - {interval} Timeframe</h3>
+        {/* FIX: Use the precomputed pairInfo instead of calling a function that might return a Promise */}
+        <h3>{pairInfo || `${symbol} - ${interval}`}</h3>
       </div>
       
       <div className="chart-wrapper">

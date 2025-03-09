@@ -1,4 +1,4 @@
-// src/components/TradingBotPanel.js
+// Simplified src/components/TradingBotPanel.js that won't render Promises
 import React, { useState, useEffect } from 'react';
 import axios from 'axios';
 import CandlestickChartApex from './CandlestickChartApex';
@@ -18,29 +18,52 @@ const TradingBotPanel = () => {
   const [startingBot, setStartingBot] = useState(false);
   const [stoppingBot, setStoppingBot] = useState(false);
   const [signals, setSignals] = useState([]);
-  const [baseAsset, setBaseAsset] = useState('');
-  const [quoteAsset, setQuoteAsset] = useState('');
+  const [displayPairInfo, setDisplayPairInfo] = useState('BTCUSDT'); // Safe display value
+  const [socketError, setSocketError] = useState(null);
 
   // Fetch available trading pairs
   useEffect(() => {
     const fetchTradingPairs = async () => {
       try {
         const response = await axios.get('/api/market-data/pairs');
-        // Filter for active trading pairs only
-        const activePairs = response.data.filter(pair => pair.status === 'TRADING');
-        // Sort by volume or another relevant factor if available
-        // For now, just alphabetically
-        activePairs.sort((a, b) => a.symbol.localeCompare(b.symbol));
-        setAvailablePairs(activePairs);
-        setIsLoading(false);
+        
+        if (response.data && Array.isArray(response.data)) {
+          const activePairs = response.data.filter(pair => pair.status === 'TRADING');
+          activePairs.sort((a, b) => a.symbol.localeCompare(b.symbol));
+          setAvailablePairs(activePairs);
+          
+          // Update display info for the selected symbol
+          updateDisplayInfo(symbol, activePairs);
+        }
       } catch (error) {
         console.error('Error fetching trading pairs:', error);
+      } finally {
         setIsLoading(false);
       }
     };
 
     fetchTradingPairs();
   }, []);
+
+  // Function to safely update the display info
+  const updateDisplayInfo = (currentSymbol, pairs) => {
+    // Default to just the symbol if we can't format it
+    let displayInfo = currentSymbol;
+    
+    if (pairs && Array.isArray(pairs)) {
+      const pair = pairs.find(p => p.symbol === currentSymbol);
+      if (pair && typeof pair.baseAsset === 'string' && typeof pair.quoteAsset === 'string') {
+        displayInfo = `${pair.baseAsset}/${pair.quoteAsset}`;
+      }
+    }
+    
+    setDisplayPairInfo(displayInfo);
+  };
+
+  // When symbol changes, update display info
+  useEffect(() => {
+    updateDisplayInfo(symbol, availablePairs);
+  }, [symbol, availablePairs]);
 
   // Fetch initial bot status
   useEffect(() => {
@@ -54,77 +77,76 @@ const TradingBotPanel = () => {
     };
 
     fetchBotStatus();
-
+    
     // Set up interval to periodically check bot status
-    const statusInterval = setInterval(fetchBotStatus, 30000); // Check every 30 seconds
-
+    const statusInterval = setInterval(fetchBotStatus, 30000);
+    
     return () => clearInterval(statusInterval);
   }, []);
 
   // Connect to WebSocket
   useEffect(() => {
-    const socket = connectSocket();
-    
-    // Listen for price updates
-    socket.on('price_update', (data) => {
-      if (data.symbol === symbol) {
-        setCurrentPrice(data.price);
-      }
-    });
-    
-    // Listen for bot status changes
-    socket.on('bot_started', (data) => {
-      if (data.symbol === symbol) {
-        setStartingBot(false);
-        setBotStatus(prev => ({
-          ...prev,
-          isRunning: true,
-          activeSymbols: [...prev.activeSymbols, `${data.symbol}-${data.interval}-${data.userId}`]
-        }));
-      }
-    });
-    
-    socket.on('bot_stopped', (data) => {
-      if (data.symbol === symbol) {
-        setStoppingBot(false);
-        
-        // Remove this symbol from active symbols
-        setBotStatus(prev => ({
-          ...prev,
-          activeSymbols: prev.activeSymbols.filter(
-            s => s !== `${data.symbol}-${data.interval}-${data.userId}`
-          ),
-          isRunning: prev.activeSymbols.length > 1 // Will still be running if there are other symbols
-        }));
-      }
-    });
-    
-    // Listen for trade signals
-    socket.on('trade_signal', (signal) => {
-      if (signal.symbol === symbol) {
-        setSignals(prev => [...prev, signal]);
-      }
-    });
-    
-    // Cleanup on unmount
-    return () => {
-      socket.off('price_update');
-      socket.off('bot_started');
-      socket.off('bot_stopped');
-      socket.off('trade_signal');
-    };
-  }, [symbol]);
-
-  // Update base/quote assets when symbol changes
-  useEffect(() => {
-    if (symbol && availablePairs.length > 0) {
-      const pair = availablePairs.find(p => p.symbol === symbol);
-      if (pair) {
-        setBaseAsset(pair.baseAsset);
-        setQuoteAsset(pair.quoteAsset);
-      }
+    try {
+      const socket = connectSocket();
+      
+      // Listen for price updates
+      socket.on('price_update', (data) => {
+        if (data && data.symbol === symbol && typeof data.price === 'number') {
+          setCurrentPrice(data.price);
+        }
+      });
+      
+      // Listen for bot status changes
+      socket.on('bot_started', (data) => {
+        if (data && data.symbol === symbol) {
+          setStartingBot(false);
+          setBotStatus(prev => ({
+            ...prev,
+            isRunning: true,
+            activeSymbols: [...prev.activeSymbols, `${data.symbol}-${data.interval}-${data.userId}`]
+          }));
+        }
+      });
+      
+      socket.on('bot_stopped', (data) => {
+        if (data && data.symbol === symbol) {
+          setStoppingBot(false);
+          
+          setBotStatus(prev => ({
+            ...prev,
+            activeSymbols: prev.activeSymbols.filter(
+              s => s !== `${data.symbol}-${data.interval}-${data.userId}`
+            ),
+            isRunning: prev.activeSymbols.length > 1
+          }));
+        }
+      });
+      
+      // Listen for trade signals
+      socket.on('trade_signal', (signal) => {
+        if (signal && signal.symbol === symbol) {
+          setSignals(prev => [...prev, signal]);
+        }
+      });
+      
+      // Listen for errors
+      socket.on('error', (error) => {
+        console.error('Socket error:', error);
+        setSocketError(typeof error === 'string' ? error : JSON.stringify(error));
+      });
+      
+      return () => {
+        socket.off('price_update');
+        socket.off('bot_started');
+        socket.off('bot_stopped');
+        socket.off('trade_signal');
+        socket.off('error');
+      };
+    } catch (error) {
+      console.error('Socket setup error:', error);
+      setSocketError('Failed to establish WebSocket connection');
     }
-  }, [symbol, availablePairs]);
+  }, [symbol]);
 
   // When symbol changes, fetch recent signals
   useEffect(() => {
@@ -150,12 +172,13 @@ const TradingBotPanel = () => {
 
   // Check if the bot is currently running for the selected symbol/interval
   const isBotRunning = () => {
-    return botStatus.activeSymbols.includes(`${symbol}-${interval}-default`);
+    return botStatus && botStatus.activeSymbols && 
+           botStatus.activeSymbols.includes(`${symbol}-${interval}-default`);
   };
 
   // Format price for display
   const formatPrice = (price) => {
-    if (!price) return 'Loading...';
+    if (price === null || price === undefined) return 'Loading...';
     
     // Determine decimal places based on price magnitude
     let decimals = 2;
@@ -178,7 +201,6 @@ const TradingBotPanel = () => {
         userId: 'default'
       });
       
-      // Bot status will be updated via socket events
       startBot(symbol, interval, 'default');
     } catch (error) {
       console.error('Error starting trading bot:', error);
@@ -198,7 +220,6 @@ const TradingBotPanel = () => {
         userId: 'default'
       });
       
-      // Bot status will be updated via socket events
       stopBot(symbol, interval, 'default');
     } catch (error) {
       console.error('Error stopping trading bot:', error);
@@ -209,6 +230,18 @@ const TradingBotPanel = () => {
   return (
     <div>
       <h2>Trading Bot Control Panel</h2>
+      
+      {socketError && (
+        <div className={styles.errorMessage}>
+          Socket error: {socketError}
+          <button 
+            className={styles.retryButton}
+            onClick={() => window.location.reload()}
+          >
+            Reload
+          </button>
+        </div>
+      )}
       
       <div className={styles.controlRow}>
         <div className={styles.formGroup}>
@@ -222,11 +255,20 @@ const TradingBotPanel = () => {
             {isLoading ? (
               <option>Loading pairs...</option>
             ) : (
-              availablePairs.map(pair => (
-                <option key={pair.symbol} value={pair.symbol}>
-                  {pair.baseAsset}/{pair.quoteAsset}
-                </option>
-              ))
+              availablePairs.map(pair => {
+                // Only render if we can safely extract the needed strings
+                if (typeof pair.symbol !== 'string') return null;
+                
+                const display = typeof pair.baseAsset === 'string' && typeof pair.quoteAsset === 'string'
+                  ? `${pair.baseAsset}/${pair.quoteAsset}`
+                  : pair.symbol;
+                  
+                return (
+                  <option key={pair.symbol} value={pair.symbol}>
+                    {display}
+                  </option>
+                );
+              })
             )}
           </select>
         </div>
@@ -263,16 +305,14 @@ const TradingBotPanel = () => {
         <div className={styles.formGroup}>
           <label className={styles.formLabel}>Current Price</label>
           <div className={styles.priceDisplay}>
-            {currentPrice ? formatPrice(currentPrice) : 'Loading...'}
+            {currentPrice !== null ? formatPrice(currentPrice) : 'Loading...'}
           </div>
         </div>
       </div>
       
-      {baseAsset && quoteAsset && (
-        <div className={styles.selectedPairInfo}>
-          <p>Currently monitoring: <strong>{baseAsset}/{quoteAsset}</strong> with {interval} intervals</p>
-        </div>
-      )}
+      <div className={styles.selectedPairInfo}>
+        <p>Currently monitoring: <strong>{displayPairInfo}</strong> with {interval} intervals</p>
+      </div>
       
       <div className={styles.buttonRow}>
         {isBotRunning() ? (
@@ -294,7 +334,6 @@ const TradingBotPanel = () => {
         )}
       </div>
       
-      {/* Render the candlestick chart with the current symbol and interval */}
       <CandlestickChartApex 
         symbol={symbol} 
         interval={interval} 

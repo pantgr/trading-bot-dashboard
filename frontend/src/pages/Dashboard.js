@@ -1,20 +1,23 @@
-// Updates to src/pages/Dashboard.js
+// Modified src/pages/Dashboard.js with Error Boundaries
 import React, { useState, useEffect, useCallback } from 'react';
-import TradingBotPanel from '../components/TradingBotPanel';
-import BotSettingsPanel from '../components/BotSettingsPanel';
-import ConnectionStatus from '../components/ConnectionStatus'; // Import the new component
+import ErrorBoundary from '../components/ErrorBoundary';
+import ConnectionStatus from '../components/ConnectionStatus';
+import apiService from '../services/api';
 import { connectSocket } from '../services/socketService';
-import apiService from '../services/api'; // Use our updated API service
 import '../components/BotSettingsPanel.css';
+
+// Use a safer TradingBotPanel component to prevent errors from crashing the app
+const SafeTradingBotPanel = React.lazy(() => import('../components/TradingBotPanel'));
+const SafeBotSettingsPanel = React.lazy(() => import('../components/BotSettingsPanel'));
 
 const Dashboard = () => {
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState(null); // Add error state
+  const [error, setError] = useState(null);
   const [portfolio, setPortfolio] = useState(null);
   const [transactions, setTransactions] = useState([]);
   const [btcPrice, setBtcPrice] = useState(null);
   const [isSettingsPanelOpen, setIsSettingsPanelOpen] = useState(false);
-  const [isConnected, setIsConnected] = useState(true); // Track connection state
+  const [isConnected, setIsConnected] = useState(true);
 
   // Function to fetch dashboard data with error handling
   const fetchDashboardData = useCallback(async () => {
@@ -58,97 +61,133 @@ const Dashboard = () => {
 
   // Connect to WebSocket
   useEffect(() => {
-    // Connect to WebSocket
-    const socket = connectSocket();
-    
-    // Listen for portfolio updates
-    socket.on('portfolio_update', (updatedPortfolio) => {
-      setPortfolio(updatedPortfolio);
-    });
-    
-    // Listen for new transactions
-    socket.on('transaction_created', (newTx) => {
-      setTransactions(prev => [newTx, ...prev]);
-    });
-    
-    // Listen for BTC price updates
-    socket.on('price_update', (data) => {
-      if (data.symbol === 'BTCUSDT') {
-        setBtcPrice(data.price);
-      }
-    });
-    
-    // Listen for reconnection events
-    socket.on('reconnect', () => {
-      console.log('Socket reconnected, refreshing data...');
-      fetchDashboardData();
-    });
-    
-    // Cleanup on unmount
-    return () => {
-      socket.off('portfolio_update');
-      socket.off('transaction_created');
-      socket.off('price_update');
-      socket.off('reconnect');
-    };
+    try {
+      // Connect to WebSocket
+      const socket = connectSocket();
+      
+      // Listen for portfolio updates
+      socket.on('portfolio_update', (updatedPortfolio) => {
+        if (updatedPortfolio) {
+          setPortfolio(updatedPortfolio);
+        }
+      });
+      
+      // Listen for new transactions
+      socket.on('transaction_created', (newTx) => {
+        if (newTx) {
+          setTransactions(prev => [newTx, ...prev]);
+        }
+      });
+      
+      // Listen for BTC price updates
+      socket.on('price_update', (data) => {
+        if (data && data.symbol === 'BTCUSDT' && data.price) {
+          setBtcPrice(data.price);
+        }
+      });
+      
+      // Listen for reconnection events
+      socket.on('reconnect', () => {
+        console.log('Socket reconnected, refreshing data...');
+        fetchDashboardData();
+      });
+      
+      // Cleanup on unmount
+      return () => {
+        socket.off('portfolio_update');
+        socket.off('transaction_created');
+        socket.off('price_update');
+        socket.off('reconnect');
+      };
+    } catch (error) {
+      console.error('Error setting up socket connection:', error);
+    }
   }, [fetchDashboardData]);
 
-  // Convert USD to BTC
+  // Convert USD to BTC - safely
   const usdToBtc = (usdAmount) => {
     if (!btcPrice || !usdAmount) return 0;
-    return usdAmount / btcPrice;
+    const amt = parseFloat(usdAmount);
+    const price = parseFloat(btcPrice);
+    if (isNaN(amt) || isNaN(price) || price === 0) return 0;
+    return amt / price;
   };
 
-  // Format BTC values
+  // Format BTC values - safely
   const formatBtcValue = (btcValue) => {
-    return btcValue ? `₿${btcValue.toFixed(8)}` : '₿0.00000000';
+    if (!btcValue) return '₿0.00000000';
+    const value = parseFloat(btcValue);
+    if (isNaN(value)) return '₿0.00000000';
+    return `₿${value.toFixed(8)}`;
   };
 
-  // Calculate total assets value in BTC
+  // Calculate total assets value in BTC - safely
   const calculateAssetsValueBTC = () => {
-    if (!portfolio || !portfolio.assets || portfolio.assets.length === 0) {
+    if (!portfolio || !portfolio.assets || !Array.isArray(portfolio.assets) || portfolio.assets.length === 0) {
       return 0;
     }
 
-    return portfolio.assets.reduce((total, asset) => {
-      let assetValueBTC = 0;
+    let totalValue = 0;
+    
+    for (const asset of portfolio.assets) {
+      if (!asset) continue;
       
-      if (asset.symbol.endsWith('BTC')) {
-        // BTC pairs already have price in BTC
-        assetValueBTC = asset.quantity * asset.currentPrice;
-      } else if (asset.symbol.endsWith('USDT') && btcPrice) {
-        // USDT pairs need conversion to BTC
-        assetValueBTC = asset.quantity * asset.currentPrice / btcPrice;
+      try {
+        let assetValueBTC = 0;
+        const quantity = parseFloat(asset.quantity) || 0;
+        const currentPrice = parseFloat(asset.currentPrice) || 0;
+        const btcPriceVal = parseFloat(btcPrice) || 1;
+        
+        if (asset.symbol && asset.symbol.endsWith('BTC')) {
+          // BTC pairs already have price in BTC
+          assetValueBTC = quantity * currentPrice;
+        } else if (asset.symbol && asset.symbol.endsWith('USDT') && btcPriceVal > 0) {
+          // USDT pairs need conversion to BTC
+          assetValueBTC = quantity * currentPrice / btcPriceVal;
+        }
+        
+        totalValue += assetValueBTC;
+      } catch (e) {
+        console.error('Error calculating asset value:', e);
       }
-      
-      return total + assetValueBTC;
-    }, 0);
+    }
+    
+    return totalValue;
   };
 
-  // Calculate total assets value in USD
+  // Calculate total assets value in USD - safely
   const calculateAssetsValueUSD = () => {
-    if (!portfolio || !portfolio.assets || portfolio.assets.length === 0) {
+    if (!portfolio || !portfolio.assets || !Array.isArray(portfolio.assets) || portfolio.assets.length === 0) {
       return 0;
     }
 
-    return portfolio.assets.reduce((total, asset) => {
-      let assetValueUSD = 0;
+    let totalValue = 0;
+    
+    for (const asset of portfolio.assets) {
+      if (!asset) continue;
       
-      if (asset.symbol.endsWith('BTC') && btcPrice) {
-        // Convert BTC pairs to USD
-        assetValueUSD = asset.quantity * asset.currentPrice * btcPrice;
-      } else if (asset.symbol.endsWith('USDT')) {
-        // USDT pairs already have price in USD
-        assetValueUSD = asset.quantity * asset.currentPrice;
+      try {
+        let assetValueUSD = 0;
+        const quantity = parseFloat(asset.quantity) || 0;
+        const currentPrice = parseFloat(asset.currentPrice) || 0;
+        const btcPriceVal = parseFloat(btcPrice) || 1;
+        
+        if (asset.symbol && asset.symbol.endsWith('BTC') && btcPriceVal > 0) {
+          // Convert BTC pairs to USD
+          assetValueUSD = quantity * currentPrice * btcPriceVal;
+        } else if (asset.symbol && asset.symbol.endsWith('USDT')) {
+          // USDT pairs already have price in USD
+          assetValueUSD = quantity * currentPrice;
+        }
+        
+        totalValue += assetValueUSD;
+      } catch (e) {
+        console.error('Error calculating asset value in USD:', e);
       }
-      
-      return total + assetValueUSD;
-    }, 0);
+    }
+    
+    return totalValue;
   };
-
-  // Use the correct values for display
-  const assetsBTC = calculateAssetsValueBTC();
-  const assetsUSD = calculateAssetsValueUSD();
 
   // Add retry button for reconnection
   const handleRetry = () => {
@@ -163,7 +202,7 @@ const Dashboard = () => {
           <div className="loading-spinner"></div>
           <p>Loading dashboard data...</p>
         </div>
-        <ConnectionStatus /> {/* Add the connection status component */}
+        <ConnectionStatus />
       </div>
     );
   }
@@ -179,10 +218,16 @@ const Dashboard = () => {
             Retry Connection
           </button>
         </div>
-        <ConnectionStatus /> {/* Add the connection status component */}
+        <ConnectionStatus />
       </div>
     );
   }
+
+  // Calculate values
+  const portfolioBalance = portfolio?.balance ? parseFloat(portfolio.balance) : 0;
+  const assetsBTC = calculateAssetsValueBTC();
+  const assetsUSD = calculateAssetsValueUSD();
+  const btcPriceDisplay = btcPrice ? parseFloat(btcPrice).toFixed(2) : 'Loading...';
 
   // Main dashboard
   return (
@@ -207,24 +252,30 @@ const Dashboard = () => {
         </div>
       </div>
       
-      <BotSettingsPanel 
-        isOpen={isSettingsPanelOpen} 
-        onClose={() => setIsSettingsPanelOpen(false)} 
-      />
+      <React.Suspense fallback={<div className="loading">Loading settings panel...</div>}>
+        {isSettingsPanelOpen && (
+          <ErrorBoundary>
+            <SafeBotSettingsPanel 
+              isOpen={isSettingsPanelOpen} 
+              onClose={() => setIsSettingsPanelOpen(false)} 
+            />
+          </ErrorBoundary>
+        )}
+      </React.Suspense>
       
       <div className="portfolio-summary">
         <div className="summary-card">
           <div className="label">Total Equity</div>
           <div className="value">
-            {formatBtcValue(usdToBtc(portfolio?.balance || 0) + assetsBTC)}
-            <div className="sub-value">${((portfolio?.balance || 0) + assetsUSD).toFixed(2)}</div>
+            {formatBtcValue(usdToBtc(portfolioBalance) + assetsBTC)}
+            <div className="sub-value">${((portfolioBalance) + assetsUSD).toFixed(2)}</div>
           </div>
         </div>
         <div className="summary-card">
           <div className="label">Available Balance</div>
           <div className="value">
-            {formatBtcValue(usdToBtc(portfolio?.balance || 0))}
-            <div className="sub-value">${portfolio?.balance?.toFixed(2) || '0.00'}</div>
+            {formatBtcValue(usdToBtc(portfolioBalance))}
+            <div className="sub-value">${portfolioBalance.toFixed(2)}</div>
           </div>
         </div>
         <div className="summary-card">
@@ -239,14 +290,18 @@ const Dashboard = () => {
         <div className="summary-card">
           <div className="label">BTC Price</div>
           <div className="value">
-            ${btcPrice ? btcPrice.toFixed(2) : 'Loading...'}
+            ${btcPriceDisplay}
           </div>
         </div>
       </div>
       
       <div className="dashboard-grid">
         <div className="bot-section">
-          <TradingBotPanel />
+          <React.Suspense fallback={<div className="loading">Loading trading bot panel...</div>}>
+            <ErrorBoundary>
+              <SafeTradingBotPanel />
+            </ErrorBoundary>
+          </React.Suspense>
         </div>
         
         <div className="portfolio-section">
@@ -268,41 +323,51 @@ const Dashboard = () => {
                   </thead>
                   <tbody>
                     {portfolio.assets.map((asset, index) => {
-                      // Calculation for asset values in BTC
-                      const isBtcPair = asset.symbol.endsWith('BTC');
+                      if (!asset) return null;
                       
-                      // Calculate BTC price correctly for different asset types
-                      const priceBTC = isBtcPair 
-                        ? asset.currentPrice  // Already in BTC
-                        : (asset.currentPrice / btcPrice); // Convert from USDT
-                      
-                      const avgPriceBTC = isBtcPair 
-                        ? asset.averagePrice  // Already in BTC
-                        : (asset.averagePrice / btcPrice); // Convert from USDT
-                      
-                      // Calculate value and cost in BTC
-                      const value = asset.quantity * priceBTC;
-                      const cost = asset.quantity * avgPriceBTC;
-                      const pnl = value - cost;
-                      const pnlPercentage = cost > 0 ? (pnl / cost) * 100 : 0;
-                      
-                      // Display symbol without the quote asset for readability
-                      const displaySymbol = isBtcPair 
-                        ? asset.symbol.replace('BTC', '') 
-                        : asset.symbol.replace('USDT', '');
-                      
-                      return (
-                        <tr key={index}>
-                          <td>{displaySymbol}</td>
-                          <td>{asset.quantity.toFixed(6)}</td>
-                          <td>{formatBtcValue(avgPriceBTC)}</td>
-                          <td>{formatBtcValue(priceBTC)}</td>
-                          <td>{formatBtcValue(value)}</td>
-                          <td className={pnl >= 0 ? 'profit' : 'loss'}>
-                            {formatBtcValue(pnl)} ({pnlPercentage.toFixed(2)}%)
-                          </td>
-                        </tr>
-                      );
+                      try {
+                        // Safely extract values to avoid rendering promises
+                        const symbol = typeof asset.symbol === 'string' ? asset.symbol : 'Unknown';
+                        const quantity = parseFloat(asset.quantity) || 0;
+                        const isBtcPair = symbol.endsWith('BTC');
+                        const btcPriceVal = parseFloat(btcPrice) || 1;
+                        
+                        // Calculate BTC price correctly for different asset types
+                        const priceBTC = isBtcPair 
+                          ? (parseFloat(asset.currentPrice) || 0)  // Already in BTC
+                          : ((parseFloat(asset.currentPrice) || 0) / btcPriceVal); // Convert from USDT
+                        
+                        const avgPriceBTC = isBtcPair 
+                          ? (parseFloat(asset.averagePrice) || 0)  // Already in BTC
+                          : ((parseFloat(asset.averagePrice) || 0) / btcPriceVal); // Convert from USDT
+                        
+                        // Calculate value and cost in BTC
+                        const value = quantity * priceBTC;
+                        const cost = quantity * avgPriceBTC;
+                        const pnl = value - cost;
+                        const pnlPercentage = cost > 0 ? (pnl / cost) * 100 : 0;
+                        
+                        // Display symbol without the quote asset for readability
+                        const displaySymbol = isBtcPair 
+                          ? symbol.replace('BTC', '') 
+                          : symbol.replace('USDT', '');
+                        
+                        return (
+                          <tr key={index}>
+                            <td>{displaySymbol}</td>
+                            <td>{quantity.toFixed(6)}</td>
+                            <td>{formatBtcValue(avgPriceBTC)}</td>
+                            <td>{formatBtcValue(priceBTC)}</td>
+                            <td>{formatBtcValue(value)}</td>
+                            <td className={pnl >= 0 ? 'profit' : 'loss'}>
+                              {formatBtcValue(pnl)} ({pnlPercentage.toFixed(2)}%)
+                            </td>
+                          </tr>
+                        );
+                      } catch (e) {
+                        console.error('Error rendering asset:', e);
+                        return null;
+                      }
                     })}
                   </tbody>
                 </table>
@@ -331,33 +396,50 @@ const Dashboard = () => {
                 </thead>
                 <tbody>
                   {transactions.map((tx, index) => {
-                    // Calculation for transaction values in BTC
-                    const isBtcPair = tx.symbol.endsWith('BTC');
+                    if (!tx) return null;
                     
-                    const priceBTC = isBtcPair
-                      ? tx.price
-                      : (tx.price / (btcPrice || 1));
+                    try {
+                      // Extract values safely
+                      const txSymbol = typeof tx.symbol === 'string' ? tx.symbol : 'Unknown';
+                      const txAction = typeof tx.action === 'string' ? tx.action : 'Unknown';
+                      const txQuantity = parseFloat(tx.quantity) || 0;
+                      const txPrice = parseFloat(tx.price) || 0;
+                      const txValue = parseFloat(tx.value) || 0;
+                      const txSignal = typeof tx.signal === 'string' ? tx.signal : 'Unknown';
+                      const txTimestamp = tx.timestamp ? new Date(tx.timestamp).toLocaleString() : 'Unknown';
                       
-                    const valueBTC = isBtcPair
-                      ? Math.abs(tx.value)
-                      : Math.abs(tx.value) / (btcPrice || 1);
-                    
-                    // Display symbol without the quote asset for readability
-                    const displaySymbol = isBtcPair
-                      ? tx.symbol.replace('BTC', '')
-                      : tx.symbol.replace('USDT', '');
-                    
-                    return (
-                      <tr key={index} className={tx.action === 'BUY' ? 'buy' : 'sell'}>
-                        <td>{new Date(tx.timestamp).toLocaleString()}</td>
-                        <td>{tx.action}</td>
-                        <td>{displaySymbol}</td>
-                        <td>{tx.quantity.toFixed(6)}</td>
-                        <td>{formatBtcValue(priceBTC)}</td>
-                        <td>{formatBtcValue(valueBTC)}</td>
-                        <td>{tx.signal}</td>
-                      </tr>
-                    );
+                      // Calculation for transaction values in BTC
+                      const isBtcPair = txSymbol.endsWith('BTC');
+                      const btcPriceVal = parseFloat(btcPrice) || 1;
+                      
+                      const priceBTC = isBtcPair
+                        ? txPrice
+                        : (txPrice / btcPriceVal);
+                        
+                      const valueBTC = isBtcPair
+                        ? Math.abs(txValue)
+                        : Math.abs(txValue) / btcPriceVal;
+                      
+                      // Display symbol without the quote asset for readability
+                      const displaySymbol = isBtcPair
+                        ? txSymbol.replace('BTC', '')
+                        : txSymbol.replace('USDT', '');
+                      
+                      return (
+                        <tr key={index} className={txAction === 'BUY' ? 'buy' : 'sell'}>
+                          <td>{txTimestamp}</td>
+                          <td>{txAction}</td>
+                          <td>{displaySymbol}</td>
+                          <td>{txQuantity.toFixed(6)}</td>
+                          <td>{formatBtcValue(priceBTC)}</td>
+                          <td>{formatBtcValue(valueBTC)}</td>
+                          <td>{txSignal}</td>
+                        </tr>
+                      );
+                    } catch (e) {
+                      console.error('Error rendering transaction:', e);
+                      return null;
+                    }
                   })}
                 </tbody>
               </table>
@@ -368,7 +450,6 @@ const Dashboard = () => {
         </div>
       </div>
       
-      {/* Add the connection status component */}
       <ConnectionStatus />
     </div>
   );

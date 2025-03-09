@@ -1,4 +1,4 @@
-/* TradingBotPanel.module.css */
+/* Updated TradingBotPanel.module.css with error styling */
 
 .controlRow {
   display: grid;
@@ -144,4 +144,35 @@
 .stopButton:hover {
   background-color: #e53e3e;
   box-shadow: 0 6px 8px rgba(245, 101, 101, 0.4);
+}
+
+/* New styles for error handling */
+.errorPanel {
+  background-color: #fff5f5;
+  border: 1px solid #fed7d7;
+  border-radius: 8px;
+  padding: 15px;
+  margin-bottom: 20px;
+}
+
+.errorMessage {
+  color: #c53030;
+  margin-bottom: 12px;
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.retryButton {
+  background-color: #4299e1;
+  color: white;
+  border: none;
+  padding: 8px 16px;
+  border-radius: 4px;
+  font-size: 14px;
+  cursor: pointer;
+  transition: background-color 0.2s;
+}
+
+.retryButton:hover {
+  background-color: #3182ce;
 }

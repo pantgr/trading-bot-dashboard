@@ -1,12 +1,15 @@
-// src/App.js
+// Modified src/App.js with ErrorBoundary
 import React from 'react';
+import ErrorBoundary from './components/ErrorBoundary';
 import Dashboard from './pages/Dashboard';
 import './App.css';
 
 function App() {
   return (
     <div className="app">
-      <Dashboard />
+      <ErrorBoundary>
+        <Dashboard />
+      </ErrorBoundary>
     </div>
   );
 }
