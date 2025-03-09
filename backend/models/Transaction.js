@@ -1,75 +1,60 @@
-// models/Transaction.js - With improved database configuration
-const path = require('path');
-const Datastore = require('nedb');
-const { promisify } = require('util');
-const dbConfig = require('../config/nedb');
+// models/Transaction.js
+const mongoose = require('mongoose');
 
-// Create the database with safer configuration
-const dbPath = path.join(dbConfig.dataDir, 'transactions.db');
-const db = new Datastore({ 
-  filename: dbPath, 
-  ...dbConfig.options
+const TransactionSchema = new mongoose.Schema({
+  userId: {
+    type: String,
+    required: true,
+    default: 'default'
+  },
+  symbol: {
+    type: String,
+    required: true
+  },
+  action: {
+    type: String,
+    required: true,
+    enum: ['BUY', 'SELL']
+  },
+  quantity: {
+    type: Number,
+    required: true
+  },
+  price: {
+    type: Number,
+    required: true
+  },
+  value: {
+    type: Number,
+    required: true
+  },
+  timestamp: {
+    type: Number,
+    required: true,
+    default: () => Date.now()
+  },
+  signal: {
+    type: String,
+    default: 'MANUAL'
+  },
+  valueUSD: {
+    type: Number
+  },
+  valueBTC: {
+    type: Number
+  },
+  btcPrice: {
+    type: Number
+  },
+  uniqueId: {
+    type: String
+  }
 });
 
-// Ensure the file is created and accessible
-try {
-  if (!require('fs').existsSync(dbPath)) {
-    require('fs').writeFileSync(dbPath, '', { flag: 'wx' });
-    console.log(`Created new transactions database file at ${dbPath}`);
-  }
-} catch (error) {
-  console.warn(`Warning creating transactions.db: ${error.message}`);
-}
+// Index for quicker lookups
+TransactionSchema.index({ userId: 1, timestamp: -1 });
+TransactionSchema.index({ userId: 1, symbol: 1, action: 1 });
+TransactionSchema.index({ uniqueId: 1 }, { unique: true, sparse: true });
 
-// Promisify the database methods
-db.findOneAsync = promisify(db.findOne.bind(db));
-db.findAsync = promisify(db.find.bind(db));
-db.insertAsync = promisify(db.insert.bind(db));
-db.updateAsync = promisify(db.update.bind(db));
-db.removeAsync = promisify(db.remove.bind(db));
-
-class Transaction {
-  constructor(data) {
-    Object.assign(this, data);
-  }
-  
-  async save() {
-    try {
-      if (this._id) {
-        // Update existing record
-        const result = await db.updateAsync({ _id: this._id }, this, {});
-        return result;
-      } else {
-        // Insert new record
-        const result = await db.insertAsync(this);
-        this._id = result._id;
-        return result;
-      }
-    } catch (error) {
-      console.error('Error saving transaction:', error);
-      throw error;
-    }
-  }
-  
-  static async findOne(query) {
-    try {
-      const result = await db.findOneAsync(query);
-      return result ? new Transaction(result) : null;
-    } catch (error) {
-      console.error('Error finding transaction:', error);
-      throw error;
-    }
-  }
-  
-  static async find(query = {}) {
-    try {
-      const results = await db.findAsync(query);
-      return results.map(result => new Transaction(result));
-    } catch (error) {
-      console.error('Error finding transactions:', error);
-      throw error;
-    }
-  }
-}
-
+const Transaction = mongoose.model('Transaction', TransactionSchema);
 module.exports = Transaction;
