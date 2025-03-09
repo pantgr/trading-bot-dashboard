@@ -1,3 +1,4 @@
+// models/MarketData.js - Διορθωμένο με τη μέθοδο cleanup
 const mongoose = require('mongoose');
 
 const MarketDataSchema = new mongoose.Schema({
@@ -84,6 +85,39 @@ MarketDataSchema.statics.getTradingPairs = async function() {
     return data ? data.pairs : null;
   } catch (error) {
     console.error('Error getting trading pairs:', error);
+    throw error;
+  }
+};
+
+// Προσθήκη της μεθόδου cleanup που λείπει
+MarketDataSchema.statics.cleanup = async function(options = {}) {
+  try {
+    const { 
+      priceDataAge = 1 * 24 * 60 * 60 * 1000,  // 1 day for price data
+      candleDataAge = 7 * 24 * 60 * 60 * 1000  // 7 days for candle data
+    } = options;
+    
+    const now = Date.now();
+    
+    // Remove old price data
+    const priceResult = await this.deleteMany({ 
+      type: 'price',
+      updatedAt: { $lt: new Date(now - priceDataAge) }
+    });
+    
+    // Remove old candle data
+    const candleResult = await this.deleteMany({
+      type: 'candle',
+      updatedAt: { $lt: new Date(now - candleDataAge) }
+    });
+    
+    console.log(`Cleaned up ${priceResult.deletedCount} price entries and ${candleResult.deletedCount} candle entries`);
+    return { 
+      priceResult: priceResult.deletedCount, 
+      candleResult: candleResult.deletedCount 
+    };
+  } catch (error) {
+    console.error('Error cleaning up market data:', error);
     throw error;
   }
 };

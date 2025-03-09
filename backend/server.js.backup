@@ -200,15 +200,6 @@ function startServer() {
     app.use('/api/signals', signalRoutes);
     app.use('/api/market-data', marketDataRoutes);
     app.use('/api/admin', adminRoutes);
-  
-  // Εφαρμογή επιπλέον διαδρομών
-  try {
-    const registerAdditionalRoutes = require('./register-routes');
-    registerAdditionalRoutes(app);
-    console.log('Successfully registered additional routes');
-  } catch (error) {
-    console.error('Failed to register additional routes:', error);
-  }
 
     // Create HTTP server
     const server = http.createServer(app);

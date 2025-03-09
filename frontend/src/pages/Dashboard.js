@@ -1,44 +1,63 @@
-import React, { useState, useEffect } from 'react';
+// Updates to src/pages/Dashboard.js
+import React, { useState, useEffect, useCallback } from 'react';
 import TradingBotPanel from '../components/TradingBotPanel';
 import BotSettingsPanel from '../components/BotSettingsPanel';
+import ConnectionStatus from '../components/ConnectionStatus'; // Import the new component
 import { connectSocket } from '../services/socketService';
-import axios from 'axios';
+import apiService from '../services/api'; // Use our updated API service
 import '../components/BotSettingsPanel.css';
 
 const Dashboard = () => {
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null); // Add error state
   const [portfolio, setPortfolio] = useState(null);
   const [transactions, setTransactions] = useState([]);
   const [btcPrice, setBtcPrice] = useState(null);
   const [isSettingsPanelOpen, setIsSettingsPanelOpen] = useState(false);
+  const [isConnected, setIsConnected] = useState(true); // Track connection state
 
-  useEffect(() => {
-    // Load initial data
-    const fetchData = async () => {
-      try {
-        // Get BTC price in USD for conversions
-        const btcPriceRes = await axios.get('/api/market-data/price/BTCUSDT');
-        if (btcPriceRes.data && btcPriceRes.data.price) {
-          setBtcPrice(btcPriceRes.data.price);
-        }
-        
-        // Get portfolio from API
-        const portfolioRes = await axios.get('/api/virtual-trade/portfolio');
-        setPortfolio(portfolioRes.data);
-        
-        // Get transaction history from API
-        const txRes = await axios.get('/api/virtual-trade/history');
-        setTransactions(txRes.data);
-        
-        setLoading(false);
-      } catch (err) {
-        console.error('Error fetching data:', err);
-        setLoading(false);
+  // Function to fetch dashboard data with error handling
+  const fetchDashboardData = useCallback(async () => {
+    try {
+      setLoading(true);
+      setError(null);
+      
+      // Get BTC price in USD for conversions
+      const btcPrice = await apiService.fetchBTCPrice();
+      if (btcPrice) {
+        setBtcPrice(btcPrice);
       }
-    };
-    
-    fetchData();
-    
+      
+      // Get portfolio from API
+      const portfolioData = await apiService.fetchPortfolio();
+      if (portfolioData) {
+        setPortfolio(portfolioData);
+      }
+      
+      // Get transaction history from API
+      const txData = await apiService.fetchTransactionHistory();
+      if (Array.isArray(txData)) {
+        setTransactions(txData);
+      }
+      
+      // Reset connection status if previously disconnected
+      setIsConnected(true);
+    } catch (err) {
+      console.error('Error fetching dashboard data:', err);
+      setError(err.message || 'Failed to load dashboard data');
+      setIsConnected(false);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  // Initial data load
+  useEffect(() => {
+    fetchDashboardData();
+  }, [fetchDashboardData]);
+
+  // Connect to WebSocket
+  useEffect(() => {
     // Connect to WebSocket
     const socket = connectSocket();
     
@@ -59,15 +78,22 @@ const Dashboard = () => {
       }
     });
     
+    // Listen for reconnection events
+    socket.on('reconnect', () => {
+      console.log('Socket reconnected, refreshing data...');
+      fetchDashboardData();
+    });
+    
     // Cleanup on unmount
     return () => {
       socket.off('portfolio_update');
       socket.off('transaction_created');
       socket.off('price_update');
+      socket.off('reconnect');
     };
-  }, []);
+  }, [fetchDashboardData]);
 
-  // Convert USD to BTC - fixed calculation
+  // Convert USD to BTC
   const usdToBtc = (usdAmount) => {
     if (!btcPrice || !usdAmount) return 0;
     return usdAmount / btcPrice;
@@ -78,7 +104,7 @@ const Dashboard = () => {
     return btcValue ? `₿${btcValue.toFixed(8)}` : '₿0.00000000';
   };
 
-  // FIXED: Calculate total assets value correctly in BTC
+  // Calculate total assets value in BTC
   const calculateAssetsValueBTC = () => {
     if (!portfolio || !portfolio.assets || portfolio.assets.length === 0) {
       return 0;
@@ -95,13 +121,11 @@ const Dashboard = () => {
         assetValueBTC = asset.quantity * asset.currentPrice / btcPrice;
       }
       
-      console.log(`Asset ${asset.symbol}: quantity=${asset.quantity}, price=${asset.currentPrice}, valueBTC=${assetValueBTC}`);
-      
       return total + assetValueBTC;
     }, 0);
   };
 
-  // FIXED: Calculate total assets value in USD
+  // Calculate total assets value in USD
   const calculateAssetsValueUSD = () => {
     if (!portfolio || !portfolio.assets || portfolio.assets.length === 0) {
       return 0;
@@ -126,20 +150,61 @@ const Dashboard = () => {
   const assetsBTC = calculateAssetsValueBTC();
   const assetsUSD = calculateAssetsValueUSD();
 
-  if (loading) {
-    return <div className="loading">Loading dashboard data...</div>;
+  // Add retry button for reconnection
+  const handleRetry = () => {
+    fetchDashboardData();
+  };
+
+  // Show loading state
+  if (loading && !portfolio) {
+    return (
+      <div className="dashboard">
+        <div className="loading">
+          <div className="loading-spinner"></div>
+          <p>Loading dashboard data...</p>
+        </div>
+        <ConnectionStatus /> {/* Add the connection status component */}
+      </div>
+    );
   }
 
+  // Show error state with retry button
+  if (error && !portfolio) {
+    return (
+      <div className="dashboard">
+        <div className="error-container">
+          <h2>Connection Error</h2>
+          <p>{error}</p>
+          <button className="retry-button" onClick={handleRetry}>
+            Retry Connection
+          </button>
+        </div>
+        <ConnectionStatus /> {/* Add the connection status component */}
+      </div>
+    );
+  }
+
+  // Main dashboard
   return (
     <div className="dashboard">
       <div className="dashboard-header">
         <h1>Trading Bot Dashboard</h1>
-        <button 
-          className="settings-button"
-          onClick={() => setIsSettingsPanelOpen(true)}
-        >
-          <i className="fas fa-cog"></i> Bot Settings
-        </button>
+        <div className="header-actions">
+          {!isConnected && (
+            <button 
+              className="retry-button"
+              onClick={handleRetry}
+            >
+              Reconnect
+            </button>
+          )}
+          <button 
+            className="settings-button"
+            onClick={() => setIsSettingsPanelOpen(true)}
+          >
+            <i className="fas fa-cog"></i> Bot Settings
+          </button>
+        </div>
       </div>
       
       <BotSettingsPanel 
@@ -203,7 +268,7 @@ const Dashboard = () => {
                   </thead>
                   <tbody>
                     {portfolio.assets.map((asset, index) => {
-                      // FIXED: Correct calculation of asset values in BTC
+                      // Calculation for asset values in BTC
                       const isBtcPair = asset.symbol.endsWith('BTC');
                       
                       // Calculate BTC price correctly for different asset types
@@ -266,7 +331,7 @@ const Dashboard = () => {
                 </thead>
                 <tbody>
                   {transactions.map((tx, index) => {
-                    // FIXED: Correct calculation of transaction values in BTC
+                    // Calculation for transaction values in BTC
                     const isBtcPair = tx.symbol.endsWith('BTC');
                     
                     const priceBTC = isBtcPair
@@ -302,6 +367,9 @@ const Dashboard = () => {
           )}
         </div>
       </div>
+      
+      {/* Add the connection status component */}
+      <ConnectionStatus />
     </div>
   );
 };
