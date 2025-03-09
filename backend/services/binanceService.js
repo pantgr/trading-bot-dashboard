@@ -1,10 +1,12 @@
-// services/binanceService.js - Complete implementation with all required methods
+// Improved backend/services/binanceService.js with better WebSocket handling
 const WebSocket = require('ws');
 const axios = require('axios');
 const MarketData = require('../models/MarketData');
 
 // Map for managing WebSocket connections
 const wsConnections = new Map();
+const pendingConnections = new Map();
+const CONNECTION_TIMEOUT = 10000; // 10 seconds to establish connection
 
 // Get historical candlestick data from Binance API or database
 const getHistoricalCandles = async (symbol, interval = '1h', limit = 100) => {
@@ -89,25 +91,102 @@ const subscribeToCandleUpdates = (symbol, interval, callback) => {
   // If there's already an active connection, add the callback
   if (wsConnections.has(wsKey)) {
     const connection = wsConnections.get(wsKey);
+    
+    // If WebSocket is not OPEN, check if it's connecting or needs reconnection
+    if (connection.ws.readyState !== WebSocket.OPEN) {
+      if (connection.ws.readyState === WebSocket.CONNECTING) {
+        // WebSocket is still connecting, just add to pending callbacks
+        console.log(`WebSocket for ${wsKey} is still connecting, adding callback`);
+        connection.callbacks.push(callback);
+        return connection;
+      } else {
+        // WebSocket is closing or closed, reconnect
+        console.log(`WebSocket for ${wsKey} is closed or closing, reconnecting`);
+        
+        // Keep the callback list and create a new WebSocket
+        const callbackList = connection.callbacks;
+        callbackList.push(callback);
+        
+        // Remove the old connection
+        wsConnections.delete(wsKey);
+        
+        // Create a new connection with all callbacks
+        return createNewWebSocketConnection(formattedSymbol, interval, callbackList);
+      }
+    }
+    
+    // WebSocket is open, add the callback
     connection.callbacks.push(callback);
     console.log(`Added new callback for ${wsKey}, total callbacks: ${connection.callbacks.length}`);
     return connection;
   }
   
-  // Connect to Binance WebSocket
+  // Create a new WebSocket connection
+  return createNewWebSocketConnection(formattedSymbol, interval, [callback]);
+};
+
+// Helper function to create a new WebSocket connection
+const createNewWebSocketConnection = (symbol, interval, callbackList) => {
+  const wsKey = `${symbol}-${interval}`;
   console.log(`Creating new WebSocket connection for ${wsKey}`);
-  const ws = new WebSocket(`wss://stream.binance.com:9443/ws/${formattedSymbol}@kline_${interval}`);
   
+  // Create the WebSocket
+  const ws = new WebSocket(`wss://stream.binance.com:9443/ws/${symbol}@kline_${interval}`);
+  
+  // Create the connection object
   const connection = {
     ws,
-    callbacks: [callback],
-    isActive: true
+    callbacks: callbackList || [],
+    isActive: true,
+    connectedAt: null,
+    reconnectCount: 0,
+    maxReconnects: 5
   };
   
+  // Add to connections map
   wsConnections.set(wsKey, connection);
   
+  // Create a timeout to detect connection issues
+  const connectionTimeoutId = setTimeout(() => {
+    if (connection.connectedAt === null) {
+      console.warn(`WebSocket connection timeout for ${wsKey}`);
+      
+      // Close the socket if it's still connecting
+      if (ws.readyState === WebSocket.CONNECTING) {
+        try {
+          ws.terminate();
+        } catch (err) {
+          console.error(`Error terminating WebSocket for ${wsKey}:`, err);
+        }
+      }
+      
+      // Try to reconnect if needed
+      if (connection.reconnectCount < connection.maxReconnects) {
+        connection.reconnectCount++;
+        console.log(`Attempting reconnect ${connection.reconnectCount}/${connection.maxReconnects} for ${wsKey}`);
+        
+        // Keep callbacks and create a new connection
+        createNewWebSocketConnection(symbol, interval, connection.callbacks);
+      } else {
+        console.error(`Maximum reconnect attempts reached for ${wsKey}`);
+        wsConnections.delete(wsKey);
+      }
+    }
+  }, CONNECTION_TIMEOUT);
+  
+  // Store the timeout ID to clear it later
+  pendingConnections.set(wsKey, connectionTimeoutId);
+  
+  // WebSocket event handlers
   ws.on('open', () => {
     console.log(`WebSocket connection opened for ${wsKey}`);
+    connection.connectedAt = Date.now();
+    
+    // Clear the connection timeout
+    if (pendingConnections.has(wsKey)) {
+      clearTimeout(pendingConnections.get(wsKey));
+      pendingConnections.delete(wsKey);
+    }
   });
   
   ws.on('message', async (data) => {
@@ -160,22 +239,27 @@ const subscribeToCandleUpdates = (symbol, interval, callback) => {
     console.log(`WebSocket connection closed for ${wsKey}`);
     connection.isActive = false;
     
-    // Reconnect after 5 seconds
-    setTimeout(() => {
-      if (wsConnections.has(wsKey) && !wsConnections.get(wsKey).isActive) {
-        console.log(`Attempting to reconnect WebSocket for ${wsKey}`);
-        wsConnections.delete(wsKey);
-        if (connection.callbacks.length > 0) {
-          subscribeToCandleUpdates(symbol, interval, connection.callbacks[0]);
+    // Clear any connection timeout
+    if (pendingConnections.has(wsKey)) {
+      clearTimeout(pendingConnections.get(wsKey));
+      pendingConnections.delete(wsKey);
+    }
+    
+    // Reconnect after 5 seconds if there are callbacks and we haven't exceeded max reconnects
+    if (connection.callbacks.length > 0 && connection.reconnectCount < connection.maxReconnects) {
+      setTimeout(() => {
+        if (wsConnections.has(wsKey) && !wsConnections.get(wsKey).isActive) {
+          connection.reconnectCount++;
+          console.log(`Attempting reconnect ${connection.reconnectCount}/${connection.maxReconnects} for ${wsKey}`);
           
-          // Add the remaining callbacks
-          for (let i = 1; i < connection.callbacks.length; i++) {
-            const existingConnection = wsConnections.get(wsKey);
-            existingConnection.callbacks.push(connection.callbacks[i]);
-          }
+          wsConnections.delete(wsKey);
+          createNewWebSocketConnection(symbol, interval, connection.callbacks);
         }
-      }
-    }, 5000);
+      }, 5000);
+    } else if (connection.callbacks.length === 0) {
+      // Remove connection from map if no callbacks
+      wsConnections.delete(wsKey);
+    }
   });
   
   return connection;
@@ -188,18 +272,55 @@ const unsubscribeFromCandleUpdates = (symbol, interval, callback) => {
   
   if (wsConnections.has(wsKey)) {
     const connection = wsConnections.get(wsKey);
-    const callbackIndex = connection.callbacks.indexOf(callback);
     
-    if (callbackIndex !== -1) {
-      connection.callbacks.splice(callbackIndex, 1);
-      console.log(`Removed callback for ${wsKey}, remaining callbacks: ${connection.callbacks.length}`);
+    // Αν παρέχεται συγκεκριμένο callback, αφαίρεσέ το μόνο
+    if (callback) {
+      const callbackIndex = connection.callbacks.indexOf(callback);
       
-      // If there are no more callbacks, close the connection
-      if (connection.callbacks.length === 0) {
-        connection.ws.close();
-        wsConnections.delete(wsKey);
-        console.log(`Closed WebSocket connection for ${wsKey} (no active callbacks)`);
+      if (callbackIndex !== -1) {
+        connection.callbacks.splice(callbackIndex, 1);
+        console.log(`Removed callback for ${wsKey}, remaining callbacks: ${connection.callbacks.length}`);
       }
+    } else {
+      // Αν δεν έχει καθοριστεί callback, αφαίρεσε όλα τα callbacks
+      console.log(`Removed all callbacks for ${wsKey}, had ${connection.callbacks.length}`);
+      connection.callbacks = [];
+    }
+    
+    // Αν δεν έχουν μείνει callbacks, κλείσε το WebSocket με ασφάλεια
+    if (connection.callbacks.length === 0) {
+      const ws = connection.ws;
+      
+      // Χειρισμός με βάση την κατάσταση του WebSocket
+      if (ws.readyState === WebSocket.OPEN) {
+        // Το socket είναι ανοιχτό, μπορούμε να το κλείσουμε με ασφάλεια
+        try {
+          ws.close();
+          console.log(`Closed WebSocket connection for ${wsKey}`);
+        } catch (closeError) {
+          console.error(`Error closing WebSocket for ${wsKey}:`, closeError);
+          try {
+            ws.terminate();
+          } catch (terminateError) {
+            console.error(`Error terminating WebSocket for ${wsKey}:`, terminateError);
+          }
+        }
+      } else if (ws.readyState === WebSocket.CONNECTING) {
+        // Το socket είναι ακόμα στη φάση σύνδεσης
+        // Προσθήκη event listener για να το κλείσει αφού συνδεθεί
+        console.log(`WebSocket for ${wsKey} is still connecting, scheduling close after connection`);
+        
+        ws.addEventListener('open', function closeAfterOpen() {
+          // Αφαίρεση του event listener για αποφυγή memory leaks
+          ws.removeEventListener('open', closeAfterOpen);
+          // Κλείσιμο του socket αφού συνδεθεί
+          ws.close();
+          console.log(`WebSocket for ${wsKey} connected and then immediately closed`);
+        });
+      }
+      
+      // Αφαίρεση από το map ανεξάρτητα από την κατάσταση
+      wsConnections.delete(wsKey);
     }
   }
 };
@@ -221,6 +342,7 @@ const getCurrentPrice = async (symbol) => {
     
     // If price exists in database and is recent (within the last 5 minutes), use it
     if (latestPrice && latestPrice.price && (Date.now() - latestPrice.time < 5 * 60 * 1000)) {
+      console.log(`Using cached price for ${formattedSymbol}: ${latestPrice.price}`);
       return latestPrice.price;
     }
     
@@ -326,6 +448,37 @@ const testConnection = async (apiKey, secretKey) => {
   }
 };
 
+// Clean up all WebSocket connections
+const cleanupConnections = () => {
+  console.log('Cleaning up all WebSocket connections');
+  
+  // Clear all pending connection timeouts
+  pendingConnections.forEach((timeoutId, key) => {
+    clearTimeout(timeoutId);
+    console.log(`Cleared pending connection timeout for ${key}`);
+  });
+  pendingConnections.clear();
+  
+  // Close all WebSocket connections
+  wsConnections.forEach((connection, key) => {
+    if (connection.ws.readyState === WebSocket.OPEN || connection.ws.readyState === WebSocket.CONNECTING) {
+      try {
+        connection.ws.close();
+        console.log(`Closed WebSocket connection for ${key}`);
+      } catch (error) {
+        console.error(`Error closing WebSocket for ${key}:`, error);
+        try {
+          connection.ws.terminate();
+        } catch (err) {
+          console.error(`Error terminating WebSocket for ${key}:`, err);
+        }
+      }
+    }
+  });
+  
+  wsConnections.clear();
+};
+
 // Export methods
 module.exports = {
   getHistoricalCandles,
@@ -333,5 +486,6 @@ module.exports = {
   unsubscribeFromCandleUpdates,
   getCurrentPrice,
   getAllTradingPairs,
-  testConnection
+  testConnection,
+  cleanupConnections
 };

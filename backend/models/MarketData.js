@@ -1,4 +1,4 @@
-// models/MarketData.js - Διορθωμένο με τη μέθοδο cleanup
+// models/MarketData.js - Fixed version with all required methods
 const mongoose = require('mongoose');
 
 const MarketDataSchema = new mongoose.Schema({
@@ -53,7 +53,7 @@ MarketDataSchema.pre('save', function(next) {
   next();
 });
 
-// Static method για trading pairs
+// Static method for saving trading pairs
 MarketDataSchema.statics.saveTradingPairs = async function(pairs) {
   try {
     return await this.findOneAndUpdate(
@@ -76,7 +76,7 @@ MarketDataSchema.statics.saveTradingPairs = async function(pairs) {
   }
 };
 
-// Static method για να πάρουμε τα trading pairs
+// Static method for getting trading pairs
 MarketDataSchema.statics.getTradingPairs = async function() {
   try {
     const data = await this.findOne({ type: 'trading_pairs' })
@@ -89,7 +89,102 @@ MarketDataSchema.statics.getTradingPairs = async function() {
   }
 };
 
-// Προσθήκη της μεθόδου cleanup που λείπει
+// Static method for saving price - ADDED
+MarketDataSchema.statics.savePrice = async function(symbol, price) {
+  try {
+    return await this.findOneAndUpdate(
+      { 
+        symbol, 
+        type: 'price'
+      },
+      {
+        symbol,
+        type: 'price',
+        price,
+        time: Date.now(),
+        updatedAt: new Date()
+      },
+      { 
+        upsert: true, 
+        new: true,
+        setDefaultsOnInsert: true 
+      }
+    );
+  } catch (error) {
+    console.error('Error saving price:', error);
+    throw error;
+  }
+};
+
+// Static method for getting latest price - ADDED
+MarketDataSchema.statics.getLatestPrice = async function(symbol) {
+  try {
+    return await this.findOne({ 
+      symbol, 
+      type: 'price' 
+    })
+    .sort({ time: -1 })
+    .limit(1);
+  } catch (error) {
+    console.error('Error getting latest price:', error);
+    throw error;
+  }
+};
+
+// Static method for saving candle - ADDED
+MarketDataSchema.statics.saveCandle = async function(symbol, interval, candle) {
+  try {
+    // Create a unique key for this candle
+    const key = `${symbol}-${interval}-${candle.time}`;
+    
+    return await this.findOneAndUpdate(
+      { 
+        key,
+        type: 'candle'
+      },
+      {
+        symbol,
+        type: 'candle',
+        interval,
+        time: candle.time,
+        open: candle.open,
+        high: candle.high,
+        low: candle.low,
+        close: candle.close,
+        volume: candle.volume,
+        isClosed: candle.isClosed,
+        key,
+        updatedAt: new Date()
+      },
+      { 
+        upsert: true, 
+        new: true,
+        setDefaultsOnInsert: true 
+      }
+    );
+  } catch (error) {
+    console.error('Error saving candle:', error);
+    throw error;
+  }
+};
+
+// Static method for getting candles - ADDED
+MarketDataSchema.statics.getCandles = async function(symbol, interval, limit = 100) {
+  try {
+    return await this.find({ 
+      symbol, 
+      type: 'candle',
+      interval
+    })
+    .sort({ time: 1 })
+    .limit(limit);
+  } catch (error) {
+    console.error('Error getting candles:', error);
+    return [];
+  }
+};
+
+// Static method for cleanup - FIXED
 MarketDataSchema.statics.cleanup = async function(options = {}) {
   try {
     const { 
